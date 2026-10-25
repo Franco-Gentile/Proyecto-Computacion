@@ -1,7 +1,7 @@
 # Contexto del proyecto — Reproductor de video distribuido
 
 > Documento para retomar el proyecto (personas o agentes de IA) sin tener que reconstruir las conversaciones previas.
-> Última actualización: 2026-10-14.
+> Última actualización: 2026-10-25.
 
 ## 1. Qué es el proyecto
 
@@ -38,13 +38,10 @@ Proyecto de la materia (UM, 3er año). Es un **reproductor de video multiusuario
 | Procesamiento | Transcodificación **on-demand** por segmento, con **prefetch** de los siguientes |
 | Escalado | El supervisor **crea y elimina contenedores worker** con el Docker SDK (monta `/var/run/docker.sock`) |
 | Cliente | CLI en Python que reproduce con `ffplay` o `mpv` (los segmentos se escriben en el stdin del reproductor) |
-| Usuarios | Registro y login con password hasheada (`hashlib.scrypt`). El catálogo es público |
+| Usuarios | Registro y login con password hasheada (`hashlib.scrypt`). El catálogo es público; incluye `LOGOUT` y `MY_VIDEOS` |
+| Formatos de upload | Extensiones permitidas validadas en dominio: `mp4`, `mkv`, `webm`, `mov` y `avi` |
+| Arquitectura de software | **4 Capas con Inversión de Dependencias (DIP)** en `common/` + entrypoints por proceso (`server`, `worker`, `supervisor`, `client`), bajo **TDD, Clean Code, SOLID, DRY y KISS** (ver [`ARQUITECTURA.md`](ARQUITECTURA.md)) |
 | Despliegue | `docker compose` |
-
-### Pendientes de confirmar
-- Comandos `LOGOUT` y `MY_VIDEOS`: los propuso la IA y todavía no fueron confirmados.
-- Formatos de upload permitidos: propuestos mp4, mkv, webm, mov y avi.
-- El supervisor está planteado como un loop sincrónico (sin asyncio), ya que asyncio quedó del lado del cliente.
 
 ---
 
@@ -90,7 +87,8 @@ flowchart LR
 
 | Archivo | Contenido |
 |---|---|
-| [`ISSUES.md`](../ISSUES.md) | Backlog completo: **95 issues atómicas** agrupadas en 12 secciones, cada una con descripción y criterios de aceptación |
+| [`ISSUES.md`](ISSUES.md) | Backlog completo: **95 issues atómicas** agrupadas en 12 secciones, cada una con descripción y criterios de aceptación |
+| [`ARQUITECTURA.md`](ARQUITECTURA.md) | Definición de la arquitectura en N capas (4 capas con DIP), servicios por módulo, contratos `Protocol`, estructura de paquetes y lineamientos TDD / Clean Code / SOLID / DRY / KISS |
 | `docs/CONTEXTO.md` | Este documento |
 
 Todavía no hay código: el repo solo tiene README, LICENSE, `.gitignore`, `ISSUES.md` y `docs/`.
@@ -160,7 +158,6 @@ Repositorio: `Franco-Gentile/Proyecto-Computaci-n----`. Se crearon **18 issues**
 
    Con eso se puede probar el flujo "registrarse → subir un video → verlo en el catálogo".
 3. Después: transcodificación y reproducción (#49–#62, #83–#87), luego supervisor (#63–#72, #12), y por último pruebas y README (#88–#95).
-4. Resolver los pendientes de la sección 2.
 
 ## 7. Cómo crear más issues en GitHub
 
