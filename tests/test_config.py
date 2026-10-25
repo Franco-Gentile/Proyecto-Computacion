@@ -1,9 +1,12 @@
 """Tests unitarios para el módulo de configuración (common/config.py - Issue #5)."""
 
+from pathlib import Path
 import unittest
 
 from common.config import AppConfig, ConfigError, load_config
 from common.domain.enums import Quality
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
 class TestLoadConfigDefaults(unittest.TestCase):
@@ -119,6 +122,52 @@ class TestLoadConfigDefaults(unittest.TestCase):
                 with self.assertRaises(ConfigError) as ctx:
                     load_config(bad_env)
                 self.assertIn(expected_var, str(ctx.exception))
+
+    def test_env_example_file_exists_and_loads_valid_config(self) -> None:
+        env_example_path = ROOT_DIR / ".env.example"
+        self.assertTrue(
+            env_example_path.is_file(),
+            "El archivo .env.example no existe en la raíz del repositorio.",
+        )
+
+        parsed_env: dict[str, str] = {}
+        for line in env_example_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            key, _, value = stripped.partition("=")
+            parsed_env[key.strip()] = value.strip()
+
+        required_keys = {
+            "DB_HOST",
+            "DB_PORT",
+            "DB_NAME",
+            "DB_USERNAME",
+            "DB_PASSWORD",
+            "DB_URL",
+            "REDIS_HOST",
+            "REDIS_PORT",
+            "REDIS_URL",
+            "SERVER_HOST",
+            "SERVER_PORT",
+            "MAX_CLIENTS",
+            "VIDEOS_DIR",
+            "MAX_UPLOAD_MB",
+            "SEG_LEN",
+            "QUALITIES",
+            "PREFETCH",
+            "MIN_WORKERS",
+            "MAX_WORKERS",
+            "TASKS_PER_WORKER",
+        }
+        self.assertTrue(
+            required_keys.issubset(parsed_env.keys()),
+            f"Faltan variables en .env.example: {required_keys - parsed_env.keys()}",
+        )
+
+        cfg = load_config(parsed_env)
+        self.assertEqual(cfg.db_port, 5434)
+        self.assertEqual(cfg.db_name, "videoapp_dev")
 
 
 if __name__ == "__main__":
