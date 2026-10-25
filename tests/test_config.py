@@ -47,6 +47,55 @@ class TestLoadConfigDefaults(unittest.TestCase):
         self.assertEqual(cfg.max_workers, 6)
         self.assertEqual(cfg.tasks_per_worker, 4)
 
+    def test_load_config_reads_custom_env_values(self) -> None:
+        custom_env = {
+            "DB_HOST": "postgres",
+            "DB_PORT": "5432",
+            "DB_NAME": "custom_db",
+            "DB_USERNAME": "admin_user",
+            "DB_PASSWORD": "secret",
+            "REDIS_HOST": "redis",
+            "REDIS_PORT": "6380",
+            "SERVER_HOST": "127.0.0.1",
+            "SERVER_PORT": "9500",
+            "MAX_CLIENTS": "25",
+            "VIDEOS_DIR": "/tmp/videos",
+            "MAX_UPLOAD_MB": "200",
+            "SEG_LEN": "6",
+            "QUALITIES": "480",
+            "PREFETCH": "5",
+            "MIN_WORKERS": "2",
+            "MAX_WORKERS": "8",
+            "TASKS_PER_WORKER": "3",
+        }
+
+        cfg = load_config(custom_env)
+
+        self.assertEqual(cfg.db_host, "postgres")
+        self.assertEqual(cfg.db_port, 5432)
+        self.assertEqual(cfg.db_name, "custom_db")
+        self.assertEqual(cfg.db_username, "admin_user")
+        self.assertEqual(cfg.db_password, "secret")
+        self.assertEqual(
+            cfg.db_url,
+            "postgresql://admin_user:secret@postgres:5432/custom_db",
+        )
+        self.assertEqual(cfg.redis_host, "redis")
+        self.assertEqual(cfg.redis_port, 6380)
+        self.assertEqual(cfg.redis_url, "redis://redis:6380/0")
+        self.assertEqual(cfg.server_host, "127.0.0.1")
+        self.assertEqual(cfg.server_port, 9500)
+        self.assertEqual(cfg.max_clients, 25)
+        self.assertEqual(cfg.videos_dir, "/tmp/videos")
+        self.assertEqual(cfg.max_upload_mb, 200)
+        self.assertEqual(cfg.max_upload_bytes, 200 * 1024 * 1024)
+        self.assertEqual(cfg.seg_len, 6)
+        self.assertEqual(cfg.qualities, (Quality.Q480,))
+        self.assertEqual(cfg.prefetch, 5)
+        self.assertEqual(cfg.min_workers, 2)
+        self.assertEqual(cfg.max_workers, 8)
+        self.assertEqual(cfg.tasks_per_worker, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
