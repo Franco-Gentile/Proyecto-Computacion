@@ -96,6 +96,30 @@ class TestLoadConfigDefaults(unittest.TestCase):
         self.assertEqual(cfg.max_workers, 8)
         self.assertEqual(cfg.tasks_per_worker, 3)
 
+    def test_load_config_raises_config_error_on_invalid_values(self) -> None:
+        invalid_cases = [
+            ({"DB_PORT": "no_numerico"}, "DB_PORT"),
+            ({"DB_PORT": "0"}, "DB_PORT"),
+            ({"DB_PORT": "70000"}, "DB_PORT"),
+            ({"REDIS_PORT": "-1"}, "REDIS_PORT"),
+            ({"SERVER_PORT": "abc"}, "SERVER_PORT"),
+            ({"MAX_CLIENTS": "0"}, "MAX_CLIENTS"),
+            ({"MAX_UPLOAD_MB": "0"}, "MAX_UPLOAD_MB"),
+            ({"SEG_LEN": "-4"}, "SEG_LEN"),
+            ({"PREFETCH": "-1"}, "PREFETCH"),
+            ({"QUALITIES": "1080"}, "QUALITIES"),
+            ({"QUALITIES": "   "}, "QUALITIES"),
+            ({"MIN_WORKERS": "0"}, "MIN_WORKERS"),
+            ({"MIN_WORKERS": "5", "MAX_WORKERS": "2"}, "MAX_WORKERS"),
+            ({"TASKS_PER_WORKER": "0"}, "TASKS_PER_WORKER"),
+        ]
+
+        for bad_env, expected_var in invalid_cases:
+            with self.subTest(env=bad_env):
+                with self.assertRaises(ConfigError) as ctx:
+                    load_config(bad_env)
+                self.assertIn(expected_var, str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
