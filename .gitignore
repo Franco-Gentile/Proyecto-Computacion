@@ -1,1 +1,25 @@
-venv
+# Entornos virtuales
+venv/
+.venv/
+ENV/
+
+# Caché de Python y bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Variables de entorno locales
+.env
+
+# Archivos de video y subidas locales / temporales
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.avi
+*.ts
+*.part
+data/
