@@ -2,6 +2,7 @@
 
 from common.domain.entities import (
     ClusterMetrics,
+    ScalingConfig,
     UploadSession,
     User,
     Video,
@@ -9,6 +10,7 @@ from common.domain.entities import (
 )
 from common.domain.enums import (
     ALLOWED_VIDEO_EXTENSIONS,
+    DEFAULT_SEGMENT_DURATION_S,
     Quality,
     VideoStatus,
 )
@@ -43,6 +45,7 @@ from common.domain.rules import (
 __all__ = [
     "ALLOWED_VIDEO_EXTENSIONS",
     "ClusterMetrics",
+    "DEFAULT_SEGMENT_DURATION_S",
     "DomainError",
     "IContainerManager",
     "IMediaEngine",
@@ -55,6 +58,7 @@ __all__ = [
     "InvalidCredentialsError",
     "InvalidUploadError",
     "Quality",
+    "ScalingConfig",
     "UploadIncompleteError",
     "UploadSession",
     "User",

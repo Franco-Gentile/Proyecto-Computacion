@@ -5,17 +5,21 @@ import math
 from pathlib import PurePath
 import re
 
-from common.domain.enums import ALLOWED_VIDEO_EXTENSIONS, Quality
+from common.domain.entities import ScalingConfig
+from common.domain.enums import (
+    ALLOWED_VIDEO_EXTENSIONS,
+    DEFAULT_SEGMENT_DURATION_S,
+    Quality,
+)
 from common.domain.exceptions import InvalidCredentialsError, InvalidUploadError
 
-_USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9_]{3,32}$")
+_USERNAME_PATTERN = re.compile(r"\A[a-zA-Z0-9_]{3,32}\Z")
 _MIN_PASSWORD_LENGTH = 6
-_DEFAULT_SEGMENT_DURATION_S = 4
 
 
 def validate_username(username: str) -> None:
     """Valida que el username tenga entre 3 y 32 caracteres alfanuméricos o '_'."""
-    if not isinstance(username, str) or not _USERNAME_PATTERN.match(username):
+    if not isinstance(username, str) or not _USERNAME_PATTERN.fullmatch(username):
         raise InvalidCredentialsError(
             "El nombre de usuario debe tener entre 3 y 32 caracteres alfanuméricos o '_'."
         )
@@ -75,7 +79,7 @@ def determine_available_qualities(height: int) -> list[Quality]:
 
 def calculate_total_segments(
     duration_s: float,
-    seg_len: int = _DEFAULT_SEGMENT_DURATION_S,
+    seg_len: int = DEFAULT_SEGMENT_DURATION_S,
 ) -> int:
     """Calcula la cantidad total de segmentos de duración `seg_len` segundos."""
     if seg_len <= 0:
@@ -88,12 +92,9 @@ def calculate_total_segments(
 def calculate_desired_workers(
     pending_tasks: int,
     current_workers: int,
-    tasks_per_worker: int,
-    min_workers: int,
-    max_workers: int,
+    config: ScalingConfig,
     last_scale_up_at: datetime | None = None,
     now: datetime | None = None,
-    cooldown_s: float = 15.0,
 ) -> int:
     """Calcula la cantidad deseada de workers aplicando límites, histéresis y cooldown.
 
@@ -101,23 +102,19 @@ def calculate_desired_workers(
     - Escalado hacia arriba: inmediato hasta el valor requerido.
     - Escalado hacia abajo: respeta ventana de `cooldown_s` tras la última subida y
       reduce como máximo de a 1 worker por ciclo (histéresis).
+    - Asegura que el resultado nunca exceda `config.max_workers` ni sea inferior a `config.min_workers`.
     """
-    if tasks_per_worker <= 0:
-        raise ValueError("tasks_per_worker debe ser mayor a 0.")
-    if min_workers < 1 or max_workers < min_workers:
-        raise ValueError("Rango inválido para min_workers y max_workers.")
-
-    raw_needed = math.ceil(max(0, pending_tasks) / tasks_per_worker)
-    target = max(min_workers, min(max_workers, raw_needed))
+    raw_needed = math.ceil(max(0, pending_tasks) / config.tasks_per_worker)
+    target = max(config.min_workers, min(config.max_workers, raw_needed))
 
     if target >= current_workers:
         return target
 
-    if last_scale_up_at is not None and cooldown_s > 0:
+    if last_scale_up_at is not None and config.cooldown_s > 0:
         reference_now = now or datetime.now(timezone.utc)
         elapsed_s = (reference_now - last_scale_up_at).total_seconds()
-        if elapsed_s < cooldown_s:
-            return max(min_workers, min(max_workers, current_workers))
+        if elapsed_s < config.cooldown_s:
+            return min(config.max_workers, max(config.min_workers, current_workers))
 
     step_down = current_workers - 1
-    return max(target, step_down)
+    return min(config.max_workers, max(target, step_down))

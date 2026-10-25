@@ -2,14 +2,15 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import math
 from uuid import UUID
 
-from common.domain.enums import Quality, VideoStatus
-from common.domain.exceptions import InvalidUploadError
-from common.domain.rules import (
-    calculate_total_segments,
-    determine_available_qualities,
+from common.domain.enums import (
+    DEFAULT_SEGMENT_DURATION_S,
+    Quality,
+    VideoStatus,
 )
+from common.domain.exceptions import InvalidUploadError
 
 
 def _utc_now() -> datetime:
@@ -44,11 +45,20 @@ class Video:
 
     def available_qualities(self) -> list[Quality]:
         """Devuelve las calidades disponibles según la altura del video."""
-        return determine_available_qualities(self.height)
+        if self.height <= 0:
+            return []
+        qualities = [Quality.Q480]
+        if self.height >= Quality.Q720.value:
+            qualities.append(Quality.Q720)
+        return qualities
 
-    def total_segments(self, seg_len: int = 4) -> int:
+    def total_segments(self, seg_len: int = DEFAULT_SEGMENT_DURATION_S) -> int:
         """Devuelve el número total de segmentos para la duración del video."""
-        return calculate_total_segments(self.duration_s, seg_len=seg_len)
+        if seg_len <= 0:
+            raise ValueError("La duración del segmento debe ser mayor a 0.")
+        if self.duration_s <= 0:
+            return 0
+        return math.ceil(self.duration_s / seg_len)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +68,7 @@ class VideoSegment:
     video_id: UUID
     quality: Quality
     index: int
-    duration_s: int = 4
+    duration_s: int = DEFAULT_SEGMENT_DURATION_S
 
 
 @dataclass(slots=True)
@@ -103,3 +113,21 @@ class ClusterMetrics:
     def total_pending(self) -> int:
         """Total de tareas pendientes sumando las colas urgent y prefetch."""
         return self.pending_urgent + self.pending_prefetch
+
+
+@dataclass(frozen=True, slots=True)
+class ScalingConfig:
+    """Configuración inmutable de las políticas de autoescalado de workers."""
+
+    min_workers: int = 1
+    max_workers: int = 6
+    tasks_per_worker: int = 4
+    cooldown_s: float = 15.0
+
+    def __post_init__(self) -> None:
+        if self.tasks_per_worker <= 0:
+            raise ValueError("tasks_per_worker debe ser mayor a 0.")
+        if self.min_workers < 1 or self.max_workers < self.min_workers:
+            raise ValueError("Rango inválido para min_workers y max_workers.")
+        if self.cooldown_s < 0:
+            raise ValueError("cooldown_s no puede ser negativo.")

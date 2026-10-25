@@ -22,3 +22,5 @@ class Quality(int, Enum):
 ALLOWED_VIDEO_EXTENSIONS: frozenset[str] = frozenset(
     {"mp4", "mkv", "webm", "mov", "avi"}
 )
+
+DEFAULT_SEGMENT_DURATION_S: int = 4

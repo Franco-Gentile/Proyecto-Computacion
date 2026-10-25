@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from common.domain import (
     ALLOWED_VIDEO_EXTENSIONS,
+    DEFAULT_SEGMENT_DURATION_S,
     ClusterMetrics,
     DomainError,
     IContainerManager,
@@ -20,6 +21,7 @@ from common.domain import (
     InvalidCredentialsError,
     InvalidUploadError,
     Quality,
+    ScalingConfig,
     UploadIncompleteError,
     UploadSession,
     User,
@@ -39,7 +41,7 @@ from common.domain import (
 
 
 class TestDomainEnumsAndExceptions(unittest.TestCase):
-    """Pruebas para enumeraciones y jerarquía de excepciones de dominio."""
+    """Pruebas para enumeraciones, constantes y jerarquía de excepciones de dominio."""
 
     def test_video_status_values(self) -> None:
         self.assertEqual(VideoStatus.UPLOADING.value, "uploading")
@@ -56,6 +58,9 @@ class TestDomainEnumsAndExceptions(unittest.TestCase):
             ALLOWED_VIDEO_EXTENSIONS,
             frozenset({"mp4", "mkv", "webm", "mov", "avi"}),
         )
+
+    def test_default_segment_duration_constant(self) -> None:
+        self.assertEqual(DEFAULT_SEGMENT_DURATION_S, 4)
 
     def test_domain_exceptions_hierarchy(self) -> None:
         exceptions = [
@@ -80,7 +85,17 @@ class TestDomainPureRules(unittest.TestCase):
                 validate_username(valid_name)
 
     def test_validate_username_rejects_invalid_names(self) -> None:
-        invalid_names = ("", "ab", "a" * 33, "con espacio", "user@mail", "usuario-1")
+        invalid_names = (
+            "",
+            "ab",
+            "a" * 33,
+            "con espacio",
+            "user@mail",
+            "usuario-1",
+            "abc\n",
+            "abc\r\n",
+            "\nabc",
+        )
         for invalid_name in invalid_names:
             with self.subTest(username=invalid_name):
                 with self.assertRaises(InvalidCredentialsError):
@@ -135,60 +150,49 @@ class TestDomainPureRules(unittest.TestCase):
         self.assertEqual(determine_available_qualities(0), [])
 
     def test_calculate_total_segments(self) -> None:
-        self.assertEqual(calculate_total_segments(0.0, seg_len=4), 0)
-        self.assertEqual(calculate_total_segments(2.5, seg_len=4), 1)
-        self.assertEqual(calculate_total_segments(4.0, seg_len=4), 1)
-        self.assertEqual(calculate_total_segments(8.0, seg_len=4), 2)
-        self.assertEqual(calculate_total_segments(10.1, seg_len=4), 3)
+        self.assertEqual(calculate_total_segments(0.0), 0)
+        self.assertEqual(calculate_total_segments(2.5), 1)
+        self.assertEqual(calculate_total_segments(4.0), 1)
+        self.assertEqual(calculate_total_segments(8.0), 2)
+        self.assertEqual(calculate_total_segments(10.1), 3)
+        self.assertEqual(calculate_total_segments(10.1, seg_len=2), 6)
 
     def test_calculate_desired_workers_scales_up_fast_and_clamps(self) -> None:
+        config = ScalingConfig(min_workers=1, max_workers=6, tasks_per_worker=4)
+
         # Cola vacía -> respeta mínimo
         self.assertEqual(
-            calculate_desired_workers(
-                pending_tasks=0,
-                current_workers=1,
-                tasks_per_worker=4,
-                min_workers=1,
-                max_workers=6,
-            ),
+            calculate_desired_workers(pending_tasks=0, current_workers=1, config=config),
             1,
         )
-        # Carga media (15 tareas / 4 por worker = ceil(3.75) = 4) -> sube rápido de 1 a 4
+        # Carga media (15 tareas / 4 por worker = ceil(3.75) = 4) -> sube rápido a 4
         self.assertEqual(
-            calculate_desired_workers(
-                pending_tasks=15,
-                current_workers=1,
-                tasks_per_worker=4,
-                min_workers=1,
-                max_workers=6,
-            ),
+            calculate_desired_workers(pending_tasks=15, current_workers=1, config=config),
             4,
         )
         # Carga alta -> limita en max_workers
         self.assertEqual(
-            calculate_desired_workers(
-                pending_tasks=100,
-                current_workers=2,
-                tasks_per_worker=4,
-                min_workers=1,
-                max_workers=6,
-            ),
+            calculate_desired_workers(pending_tasks=100, current_workers=2, config=config),
             6,
         )
 
     def test_calculate_desired_workers_hysteresis_and_cooldown(self) -> None:
+        config = ScalingConfig(
+            min_workers=1,
+            max_workers=6,
+            tasks_per_worker=4,
+            cooldown_s=15.0,
+        )
         now = datetime(2026, 10, 25, 18, 0, 0, tzinfo=timezone.utc)
+
         # En ventana de cooldown tras una subida reciente: no baja
         self.assertEqual(
             calculate_desired_workers(
                 pending_tasks=0,
                 current_workers=4,
-                tasks_per_worker=4,
-                min_workers=1,
-                max_workers=6,
+                config=config,
                 last_scale_up_at=now - timedelta(seconds=5),
                 now=now,
-                cooldown_s=15.0,
             ),
             4,
         )
@@ -197,15 +201,123 @@ class TestDomainPureRules(unittest.TestCase):
             calculate_desired_workers(
                 pending_tasks=0,
                 current_workers=4,
-                tasks_per_worker=4,
-                min_workers=1,
-                max_workers=6,
+                config=config,
                 last_scale_up_at=now - timedelta(seconds=20),
                 now=now,
-                cooldown_s=15.0,
             ),
             3,
         )
+        # Si current_workers excede max_workers, el resultado queda acotado a max_workers
+        self.assertEqual(
+            calculate_desired_workers(
+                pending_tasks=0,
+                current_workers=10,
+                config=config,
+                last_scale_up_at=now - timedelta(seconds=20),
+                now=now,
+            ),
+            6,
+        )
+
+    def test_calculate_desired_workers_no_oscillation_sequence(self) -> None:
+        """Simula una secuencia temporal de carga para validar histéresis y cooldown (Issue #65)."""
+        config = ScalingConfig(
+            min_workers=1,
+            max_workers=5,
+            tasks_per_worker=4,
+            cooldown_s=15.0,
+        )
+        base_time = datetime(2026, 10, 25, 18, 0, 0, tzinfo=timezone.utc)
+
+        # t=0s: Estado base sin carga
+        workers = calculate_desired_workers(
+            pending_tasks=0,
+            current_workers=1,
+            config=config,
+            now=base_time,
+        )
+        self.assertEqual(workers, 1)
+
+        # t=10s: Pico súbito de 20 tareas (20/4 = 5 workers)
+        scale_up_time = base_time + timedelta(seconds=10)
+        workers = calculate_desired_workers(
+            pending_tasks=20,
+            current_workers=1,
+            config=config,
+            now=scale_up_time,
+        )
+        self.assertEqual(workers, 5)
+
+        # t=15s: La carga cae a 0 inmediatamente (5s después del pico, dentro de cooldown de 15s)
+        # Debe mantenerse en 5 workers sin oscilar ni bajar abruptamente
+        workers = calculate_desired_workers(
+            pending_tasks=0,
+            current_workers=5,
+            config=config,
+            last_scale_up_at=scale_up_time,
+            now=base_time + timedelta(seconds=15),
+        )
+        self.assertEqual(workers, 5)
+
+        # t=24s: Sigue dentro de la ventana de cooldown (14s transcurridos < 15s)
+        workers = calculate_desired_workers(
+            pending_tasks=0,
+            current_workers=5,
+            config=config,
+            last_scale_up_at=scale_up_time,
+            now=base_time + timedelta(seconds=24),
+        )
+        self.assertEqual(workers, 5)
+
+        # t=26s: Cooldown vencido (16s transcurridos > 15s) -> baja de a 1 (5 -> 4)
+        workers = calculate_desired_workers(
+            pending_tasks=0,
+            current_workers=5,
+            config=config,
+            last_scale_up_at=scale_up_time,
+            now=base_time + timedelta(seconds=26),
+        )
+        self.assertEqual(workers, 4)
+
+        # t=28s: Próximo ciclo sin carga -> baja de a 1 (4 -> 3)
+        workers = calculate_desired_workers(
+            pending_tasks=0,
+            current_workers=4,
+            config=config,
+            last_scale_up_at=scale_up_time,
+            now=base_time + timedelta(seconds=28),
+        )
+        self.assertEqual(workers, 3)
+
+        # t=30s: Próximo ciclo sin carga -> baja de a 1 (3 -> 2)
+        workers = calculate_desired_workers(
+            pending_tasks=0,
+            current_workers=3,
+            config=config,
+            last_scale_up_at=scale_up_time,
+            now=base_time + timedelta(seconds=30),
+        )
+        self.assertEqual(workers, 2)
+
+        # t=32s: Próximo ciclo sin carga -> baja de a 1 (2 -> 1)
+        workers = calculate_desired_workers(
+            pending_tasks=0,
+            current_workers=2,
+            config=config,
+            last_scale_up_at=scale_up_time,
+            now=base_time + timedelta(seconds=32),
+        )
+        self.assertEqual(workers, 1)
+
+        # t=34s: Ya en el mínimo -> se mantiene en 1
+        workers = calculate_desired_workers(
+            pending_tasks=0,
+            current_workers=1,
+            config=config,
+            last_scale_up_at=scale_up_time,
+            now=base_time + timedelta(seconds=34),
+        )
+        self.assertEqual(workers, 1)
 
 
 class TestDomainEntities(unittest.TestCase):
@@ -232,11 +344,12 @@ class TestDomainEntities(unittest.TestCase):
             status=VideoStatus.READY,
         )
         self.assertEqual(video.available_qualities(), [Quality.Q480, Quality.Q720])
-        self.assertEqual(video.total_segments(seg_len=4), 4)
+        self.assertEqual(video.total_segments(), 4)
+        self.assertEqual(video.total_segments(seg_len=2), 8)
 
-    def test_video_segment_is_immutable(self) -> None:
+    def test_video_segment_is_immutable_and_uses_default_duration(self) -> None:
         seg = VideoSegment(video_id=uuid4(), quality=Quality.Q480, index=2)
-        self.assertEqual(seg.duration_s, 4)
+        self.assertEqual(seg.duration_s, DEFAULT_SEGMENT_DURATION_S)
         with self.assertRaises(Exception):
             seg.index = 5  # type: ignore[misc]
 
@@ -266,11 +379,27 @@ class TestDomainEntities(unittest.TestCase):
         )
         self.assertEqual(metrics.total_pending, 12)
 
+    def test_scaling_config_validation(self) -> None:
+        valid_cfg = ScalingConfig(min_workers=1, max_workers=8, tasks_per_worker=2, cooldown_s=10.0)
+        self.assertEqual(valid_cfg.max_workers, 8)
+
+        with self.assertRaises(ValueError):
+            ScalingConfig(tasks_per_worker=0)
+
+        with self.assertRaises(ValueError):
+            ScalingConfig(min_workers=0)
+
+        with self.assertRaises(ValueError):
+            ScalingConfig(min_workers=5, max_workers=4)
+
+        with self.assertRaises(ValueError):
+            ScalingConfig(cooldown_s=-1.0)
+
 
 class TestDomainPortsProtocols(unittest.TestCase):
-    """Verifica que las interfaces (typing.Protocol) estén bien definidas."""
+    """Verifica que las interfaces (typing.Protocol) estén bien definidas y soporten @runtime_checkable."""
 
-    def test_protocols_are_runtime_checkable_and_have_expected_methods(self) -> None:
+    def test_protocols_runtime_checkable_and_members(self) -> None:
         expected_ports = {
             IUserRepository: {"create", "get_by_username", "get_by_id"},
             IPasswordHasher: {"hash_password", "verify_password"},
@@ -311,8 +440,22 @@ class TestDomainPortsProtocols(unittest.TestCase):
 
         for protocol_cls, methods in expected_ports.items():
             with self.subTest(protocol=protocol_cls.__name__):
-                self.assertTrue(getattr(protocol_cls, "_is_protocol", False))
-                self.assertTrue(getattr(protocol_cls, "_is_runtime_protocol", False))
+                # 1. Caso negativo: un objeto plano no cumple el contrato
+                self.assertFalse(isinstance(object(), protocol_cls))
+
+                # 2. Caso positivo: una clase dummy con los métodos requeridos cumple el contrato
+                dummy_class = type(
+                    f"Dummy{protocol_cls.__name__}",
+                    (),
+                    {method_name: (lambda *args, **kwargs: None) for method_name in methods},
+                )
+                dummy_instance = dummy_class()
+                self.assertTrue(
+                    isinstance(dummy_instance, protocol_cls),
+                    f"{protocol_cls.__name__} no reconoció a dummy_instance mediante isinstance.",
+                )
+
+                # 3. Métodos declarados
                 members = {
                     name
                     for name, _ in inspect.getmembers(
