@@ -231,5 +231,68 @@ class TestAsyncProtocol(unittest.IsolatedAsyncioTestCase):
             s_sync.close()
 
 
+class TestProtocolEdgeCasesAndStress(unittest.TestCase):
+    """Pruebas adicionales para Issue #17 / GitHub #15: Edge cases, payloads grandes y streams continuos."""
+
+    def setUp(self) -> None:
+        self.server_sock, self.client_sock = socket.socketpair()
+        self.server_sock.settimeout(5.0)
+        self.client_sock.settimeout(5.0)
+
+    def tearDown(self) -> None:
+        self.server_sock.close()
+        self.client_sock.close()
+
+    def test_completely_empty_message(self) -> None:
+        """Mensaje con header vacío y payload vacío."""
+        send_msg(self.client_sock, {})
+        header, payload = recv_msg(self.server_sock)
+        self.assertEqual(header, {"size": 0})
+        self.assertEqual(payload, b"")
+
+    def test_large_payload_transfer(self) -> None:
+        """Envío y recepción de payload binario de 2 MiB."""
+        large_payload = b"X" * (2 * 1024 * 1024)
+        header = {"cmd": "UPLOAD_CHUNK", "seq": 1}
+
+        send_msg(self.client_sock, header, large_payload)
+        received_header, received_payload = recv_msg(self.server_sock)
+
+        self.assertEqual(received_header["size"], len(large_payload))
+        self.assertEqual(len(received_payload), len(large_payload))
+        self.assertEqual(received_payload, large_payload)
+
+    def test_multiple_consecutive_messages_in_stream(self) -> None:
+        """Varios mensajes enviados en ráfaga sobre el mismo socket."""
+        messages = [
+            ({"cmd": "MSG_1", "id": 1}, b"payload_one"),
+            ({"cmd": "MSG_2", "id": 2}, b""),
+            ({"cmd": "MSG_3", "id": 3}, b"payload_three_longer_data"),
+            ({"cmd": "BYE"}, b""),
+        ]
+
+        for h, p in messages:
+            send_msg(self.client_sock, h, p)
+
+        for expected_h, expected_p in messages:
+            h, p = recv_msg(self.server_sock)
+            self.assertEqual(h["cmd"], expected_h["cmd"])
+            self.assertEqual(p, expected_p)
+
+    def test_connection_severed_during_payload(self) -> None:
+        """Corte de socket a mitad de transmisión del payload."""
+        header = {"cmd": "UPLOAD_CHUNK"}
+        payload = b"1234567890"
+
+        # Envía prefijo + header + solo los primeros 3 bytes del payload
+        header_bytes = json.dumps({"cmd": "UPLOAD_CHUNK", "size": len(payload)}).encode("utf-8")
+        prefix = struct.pack("!I", len(header_bytes))
+        self.client_sock.sendall(prefix + header_bytes + payload[:3])
+        self.client_sock.close()
+
+        with self.assertRaises(ConnectionError):
+            recv_msg(self.server_sock)
+
+
 if __name__ == "__main__":
     unittest.main()
