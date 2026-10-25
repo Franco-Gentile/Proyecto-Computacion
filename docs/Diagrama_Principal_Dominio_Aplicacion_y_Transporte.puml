@@ -1,0 +1,154 @@
+@startuml Diagrama_Principal_Dominio_Aplicacion_y_Transporte
+title 1. Diagrama Principal: Dominio, Aplicación y Transporte
+
+skinparam packageStyle rectangle
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+
+package "1. Capa de Transporte / Entrypoints" {
+    class TCPServer {
+        +start() : void
+        +stop() : void
+    }
+
+    class ClientHandler {
+        -current_user : User
+        -upload_session : UploadSession
+        +handle_client() : void
+        +dispatch_command(cmd: str, header: dict, payload: bytes) : void
+    }
+
+    class ClientCLI {
+        +run_command() : void
+    }
+
+    class AsyncServerClient {
+        +connect() : void
+        +request(header: dict, payload: bytes) : tuple
+        +close() : void
+    }
+
+    class StreamBufferPlayer {
+        -segment_queue : asyncio.Queue
+        +play_stream(video_id: UUID, quality: int) : void
+    }
+}
+
+package "2. Capa de Aplicación (common.application)" {
+    class AuthService {
+        +register(username: str, password: str) : User
+        +authenticate(username: str, password: str) : User
+    }
+
+    class VideoCatalogService {
+        +begin_upload(user_id: int, title: str, filename: str, size: int) : UploadSession
+        +upload_chunk(session: UploadSession, data: bytes) : void
+        +finish_upload(session: UploadSession) : Video
+        +abort_upload(session: UploadSession) : void
+        +list_public_catalog() : list<Video>
+        +list_user_videos(user_id: int) : list<Video>
+        +get_video_details(video_id: UUID) : Video
+    }
+
+    class StreamingService {
+        +prepare_playback(video_id: UUID, quality: Quality, start_seg: int) : dict
+        +fetch_segment(video_id: UUID, quality: Quality, index: int) : bytes
+    }
+
+    class MediaWorkerService {
+        +analyze_uploaded_video(video_id: UUID) : void
+        +transcode_video_segment(video_id: UUID, quality: Quality, index: int) : void
+    }
+
+    class SupervisorService {
+        +evaluate_and_scale() : ClusterMetrics
+    }
+}
+
+package "3. Capa de Dominio (common.domain)" {
+    enum VideoStatus {
+        UPLOADING
+        PROCESSING
+        READY
+        ERROR
+    }
+
+    enum Quality {
+        Q480 = 480
+        Q720 = 720
+    }
+
+    class User {
+        +id : int
+        +username : str
+        +password_hash : str
+        +created_at : datetime
+    }
+
+    class Video {
+        +id : UUID
+        +owner_id : int
+        +title : str
+        +original_filename : str
+        +path : str
+        +size_bytes : int
+        +duration_s : float
+        +width : int
+        +height : int
+        +status : VideoStatus
+        +created_at : datetime
+        +available_qualities() : list<Quality>
+        +total_segments(seg_len: int) : int
+    }
+
+    class VideoSegment {
+        +video_id : UUID
+        +quality : Quality
+        +index : int
+        +duration_s : int = 4
+    }
+
+    class UploadSession {
+        +video_id : UUID
+        +owner_id : int
+        +expected_bytes : int
+        +received_bytes : int
+        +temp_path : str
+        +final_path : str
+    }
+
+    class ClusterMetrics {
+        +pending_urgent : int
+        +pending_prefetch : int
+        +active_workers : int
+        +desired_workers : int
+        +last_scale_up_at : datetime
+    }
+}
+
+' Relaciones en Capa de Transporte
+TCPServer *-- "0..*" ClientHandler : 1 hilo por cliente
+ClientCLI --> AsyncServerClient : usa
+ClientCLI --> StreamBufferPlayer : reproduce con
+StreamBufferPlayer --> AsyncServerClient : recibe segmentos
+
+' Relaciones Transporte -> Aplicación
+ClientHandler --> AuthService : LOGIN / REGISTER
+ClientHandler --> VideoCatalogService : UPLOAD / LIST / INFO
+ClientHandler --> StreamingService : PLAY
+
+' Relaciones Aplicación -> Dominio
+AuthService ..> User : gestiona
+VideoCatalogService ..> Video : gestiona
+VideoCatalogService ..> UploadSession : controla
+StreamingService ..> VideoSegment : solicita
+MediaWorkerService ..> Video : analiza
+MediaWorkerService ..> VideoSegment : transcodifica
+SupervisorService ..> ClusterMetrics : calcula
+
+' Relaciones internas de Dominio
+Video --> User : owner_id
+Video --> VideoStatus
+VideoSegment --> Quality
+
+@enduml

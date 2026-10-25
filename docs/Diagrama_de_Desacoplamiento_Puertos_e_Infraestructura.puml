@@ -1,0 +1,113 @@
+@startuml Diagrama_de_Desacoplamiento_Puertos_e_Infraestructura
+title 2. Diagrama de Desacoplamiento (Puertos e Infraestructura)
+
+skinparam packageStyle rectangle
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+
+package "2. Capa de Aplicación (common.application)" {
+    class AuthService
+    class VideoCatalogService
+    class StreamingService
+    class MediaWorkerService
+    class SupervisorService
+}
+
+package "3. Capa de Dominio — Interfaces / Puertos (common.domain)" {
+    interface IUserRepository {
+        +create(username: str, password_hash: str) : User
+        +get_by_username(username: str) : User
+        +get_by_id(user_id: int) : User
+    }
+
+    interface IPasswordHasher {
+        +hash_password(raw_password: str) : str
+        +verify_password(raw_password: str, password_hash: str) : bool
+    }
+
+    interface IVideoRepository {
+        +create(video: Video) : UUID
+        +get_by_id(video_id: UUID) : Video
+        +update_status_and_metadata(video_id: UUID, status: VideoStatus, duration_s: float, width: int, height: int) : void
+        +list_ready() : list<Video>
+        +list_by_owner(owner_id: int) : list<Video>
+        +delete(video_id: UUID) : void
+    }
+
+    interface IVideoStorage {
+        +create_temp_file(video_id: UUID) : str
+        +append_chunk(temp_path: str, chunk: bytes) : void
+        +finalize_upload(video_id: UUID, ext: str) : str
+        +remove_files(video_id: UUID) : void
+    }
+
+    interface ISegmentCache {
+        +get_segment(segment: VideoSegment) : bytes
+        +put_segment(segment: VideoSegment, data: bytes) : void
+        +try_lock_segment(segment: VideoSegment) : bool
+        +release_lock(segment: VideoSegment) : void
+        +notify_segment_ready(segment: VideoSegment) : void
+        +notify_segment_error(segment: VideoSegment) : void
+        +wait_for_segment(segment: VideoSegment, timeout: int) : bytes
+    }
+
+    interface ITaskQueue {
+        +enqueue_probe(video_id: UUID) : void
+        +enqueue_transcode(segment: VideoSegment, priority_queue: str) : void
+    }
+
+    interface IMediaEngine {
+        +probe(path: str) : dict
+        +transcode_segment(path: str, segment: VideoSegment) : bytes
+    }
+
+    interface IContainerManager {
+        +get_queue_and_worker_metrics() : ClusterMetrics
+        +list_dynamic_workers() : list<str>
+        +spawn_worker() : str
+        +shutdown_and_remove_worker(worker_name: str) : void
+        +publish_supervisor_metrics(metrics: ClusterMetrics) : void
+        +get_supervisor_metrics() : ClusterMetrics
+    }
+}
+
+package "4. Capa de Infraestructura — Adaptadores (common.infrastructure)" {
+    class PostgresUserRepository
+    class ScryptPasswordHasher
+    class PostgresVideoRepository
+    class LocalFileVideoStorage
+    class RedisSegmentCache
+    class CeleryTaskQueue
+    class FfmpegMediaEngine
+    class DockerContainerManager
+}
+
+' Dependencias desde Aplicación hacia Puertos (Dominio)
+AuthService --> IUserRepository
+AuthService --> IPasswordHasher
+
+VideoCatalogService --> IVideoRepository
+VideoCatalogService --> IVideoStorage
+VideoCatalogService --> ITaskQueue
+
+StreamingService --> IVideoRepository
+StreamingService --> ISegmentCache
+StreamingService --> ITaskQueue
+
+MediaWorkerService --> IVideoRepository
+MediaWorkerService --> ISegmentCache
+MediaWorkerService --> IMediaEngine
+
+SupervisorService --> IContainerManager
+
+' Implementación de Puertos por Adaptadores (DIP)
+PostgresUserRepository ..|> IUserRepository
+ScryptPasswordHasher ..|> IPasswordHasher
+PostgresVideoRepository ..|> IVideoRepository
+LocalFileVideoStorage ..|> IVideoStorage
+RedisSegmentCache ..|> ISegmentCache
+CeleryTaskQueue ..|> ITaskQueue
+FfmpegMediaEngine ..|> IMediaEngine
+DockerContainerManager ..|> IContainerManager
+
+@enduml
