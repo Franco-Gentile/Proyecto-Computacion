@@ -3,9 +3,10 @@
 import json
 import socket
 import struct
+import threading
 import unittest
 
-from common.protocol import ProtocolError, send_msg
+from common.protocol import ProtocolError, _recv_exact, send_msg
 
 
 class TestSendMsgSync(unittest.TestCase):
@@ -52,6 +53,48 @@ class TestSendMsgSync(unittest.TestCase):
         parsed_header = json.loads(header_raw.decode("utf-8"))
         self.assertEqual(parsed_header["cmd"], "LIST")
         self.assertEqual(parsed_header["size"], 0)
+
+
+class TestRecvExactSync(unittest.TestCase):
+    """Pruebas para Issue #14 / GitHub #12: Recepción exacta de bytes (sync)."""
+
+    def setUp(self) -> None:
+        self.server_sock, self.client_sock = socket.socketpair()
+        self.server_sock.settimeout(2.0)
+        self.client_sock.settimeout(2.0)
+
+    def tearDown(self) -> None:
+        self.server_sock.close()
+        self.client_sock.close()
+
+    def test_recv_exact_zero_bytes(self) -> None:
+        self.assertEqual(_recv_exact(self.server_sock, 0), b"")
+
+    def test_recv_exact_reads_complete_data(self) -> None:
+        self.client_sock.sendall(b"1234567890")
+        result = _recv_exact(self.server_sock, 10)
+        self.assertEqual(result, b"1234567890")
+
+    def test_recv_exact_handles_fragmented_delivery(self) -> None:
+        expected = b"fragmented-payload-test"
+
+        def sender() -> None:
+            for byte in expected:
+                self.client_sock.sendall(bytes([byte]))
+
+        thread = threading.Thread(target=sender)
+        thread.start()
+        result = _recv_exact(self.server_sock, len(expected))
+        thread.join()
+
+        self.assertEqual(result, expected)
+
+    def test_recv_exact_raises_connection_error_on_premature_close(self) -> None:
+        self.client_sock.sendall(b"123")
+        self.client_sock.close()
+
+        with self.assertRaises(ConnectionError):
+            _recv_exact(self.server_sock, 10)
 
 
 if __name__ == "__main__":

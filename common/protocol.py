@@ -11,6 +11,8 @@ import socket
 import struct
 from typing import Any
 
+MAX_HEADER_SIZE: int = 65536
+
 
 class ProtocolError(Exception):
     """Error en el formato, framing o deserialización del protocolo."""
@@ -42,3 +44,29 @@ def send_msg(
 
     prefix = struct.pack("!I", len(header_bytes))
     sock.sendall(prefix + header_bytes + bytes(payload))
+
+
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    """Lee exactamente `n` bytes del socket.
+
+    Repite lecturas hasta completar los `n` bytes solicitados o lanza `ConnectionError`
+    si el socket remoto se cierra antes de completarlos.
+    """
+    if n < 0:
+        raise ValueError("La cantidad de bytes a leer no puede ser negativa.")
+    if n == 0:
+        return b""
+
+    chunks: list[bytes] = []
+    bytes_read = 0
+
+    while bytes_read < n:
+        chunk = sock.recv(min(n - bytes_read, 4096))
+        if not chunk:
+            raise ConnectionError(
+                f"Conexión cerrada prematuramente: se esperaban {n} bytes, pero se recibieron {bytes_read}."
+            )
+        chunks.append(chunk)
+        bytes_read += len(chunk)
+
+    return b"".join(chunks)
