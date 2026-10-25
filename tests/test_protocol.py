@@ -6,7 +6,7 @@ import struct
 import threading
 import unittest
 
-from common.protocol import ProtocolError, _recv_exact, send_msg
+from common.protocol import ProtocolError, _recv_exact, recv_msg, send_msg
 
 
 class TestSendMsgSync(unittest.TestCase):
@@ -95,6 +95,63 @@ class TestRecvExactSync(unittest.TestCase):
 
         with self.assertRaises(ConnectionError):
             _recv_exact(self.server_sock, 10)
+
+
+class TestRecvMsgSync(unittest.TestCase):
+    """Pruebas para Issue #15 / GitHub #13: Recepción de mensajes (sync)."""
+
+    def setUp(self) -> None:
+        self.server_sock, self.client_sock = socket.socketpair()
+        self.server_sock.settimeout(2.0)
+        self.client_sock.settimeout(2.0)
+
+    def tearDown(self) -> None:
+        self.server_sock.close()
+        self.client_sock.close()
+
+    def test_recv_msg_roundtrip(self) -> None:
+        original_header = {"cmd": "PLAY", "video_id": "vid-123", "quality": 720}
+        original_payload = b"segment-payload-bytes"
+
+        send_msg(self.client_sock, original_header, original_payload)
+        header, payload = recv_msg(self.server_sock)
+
+        self.assertEqual(header["cmd"], "PLAY")
+        self.assertEqual(header["video_id"], "vid-123")
+        self.assertEqual(header["quality"], 720)
+        self.assertEqual(header["size"], len(original_payload))
+        self.assertEqual(payload, original_payload)
+
+    def test_recv_msg_with_empty_payload(self) -> None:
+        send_msg(self.client_sock, {"cmd": "STATUS"})
+        header, payload = recv_msg(self.server_sock)
+
+        self.assertEqual(header["cmd"], "STATUS")
+        self.assertEqual(header["size"], 0)
+        self.assertEqual(payload, b"")
+
+    def test_recv_msg_raises_protocol_error_on_invalid_json(self) -> None:
+        bad_header_bytes = b"not-a-valid-json{"
+        prefix = struct.pack("!I", len(bad_header_bytes))
+        self.client_sock.sendall(prefix + bad_header_bytes)
+
+        with self.assertRaises(ProtocolError):
+            recv_msg(self.server_sock)
+
+    def test_recv_msg_raises_protocol_error_on_non_dict_json(self) -> None:
+        non_dict_header = b"[1, 2, 3]"
+        prefix = struct.pack("!I", len(non_dict_header))
+        self.client_sock.sendall(prefix + non_dict_header)
+
+        with self.assertRaises(ProtocolError):
+            recv_msg(self.server_sock)
+
+    def test_recv_msg_raises_protocol_error_on_header_too_large(self) -> None:
+        prefix = struct.pack("!I", 70000)
+        self.client_sock.sendall(prefix)
+
+        with self.assertRaises(ProtocolError):
+            recv_msg(self.server_sock)
 
 
 if __name__ == "__main__":

@@ -70,3 +70,34 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
         bytes_read += len(chunk)
 
     return b"".join(chunks)
+
+
+def recv_msg(sock: socket.socket) -> tuple[dict[str, Any], bytes]:
+    """Recibe un mensaje atómico del socket `(header, payload)`.
+
+    Lee el prefijo de 4 bytes con la longitud del header, deserializa el header JSON
+    y lee exactamente los bytes del payload según el campo `header["size"]`.
+    """
+    prefix = _recv_exact(sock, 4)
+    header_len = struct.unpack("!I", prefix)[0]
+
+    if header_len > MAX_HEADER_SIZE:
+        raise ProtocolError(
+            f"El largo del header ({header_len} B) supera el límite permitido ({MAX_HEADER_SIZE} B)."
+        )
+
+    header_bytes = _recv_exact(sock, header_len)
+    try:
+        header = json.loads(header_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise ProtocolError(f"Header JSON inválido: {exc}") from exc
+
+    if not isinstance(header, dict):
+        raise ProtocolError("El header debe ser un objeto/diccionario JSON.")
+
+    payload_size = header.get("size", 0)
+    if not isinstance(payload_size, int) or payload_size < 0:
+        raise ProtocolError("El campo 'size' del header debe ser un entero no negativo.")
+
+    payload = _recv_exact(sock, payload_size)
+    return header, payload
