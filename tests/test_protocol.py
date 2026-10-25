@@ -161,6 +161,21 @@ class TestRecvMsgSync(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             recv_msg(self.server_sock)
 
+    def test_recv_msg_rejects_boolean_or_negative_size(self) -> None:
+        for invalid_size in (True, False, -5, "10"):
+            with self.subTest(size=invalid_size):
+                s_sock, c_sock = socket.socketpair()
+                s_sock.settimeout(2.0)
+                c_sock.settimeout(2.0)
+                try:
+                    raw_header = json.dumps({"cmd": "TEST", "size": invalid_size}).encode("utf-8")
+                    c_sock.sendall(struct.pack("!I", len(raw_header)) + raw_header)
+                    with self.assertRaises(ProtocolError):
+                        recv_msg(s_sock)
+                finally:
+                    s_sock.close()
+                    c_sock.close()
+
 
 class TestAsyncProtocol(unittest.IsolatedAsyncioTestCase):
     """Pruebas para Issue #16 / GitHub #14: Envío y recepción async."""
@@ -230,6 +245,65 @@ class TestAsyncProtocol(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(writer_c.wait_closed(), return_exceptions=True)
             s_sync.close()
 
+    async def test_async_recv_raises_connection_error_on_incomplete_read(self) -> None:
+        server_sock, client_sock = socket.socketpair()
+        reader_s, writer_s = await asyncio.open_connection(sock=server_sock)
+        _, writer_c = await asyncio.open_connection(sock=client_sock)
+
+        try:
+            # Envía solo 2 bytes del prefijo de 4 bytes y cierra
+            writer_c.write(b"\x00\x01")
+            await writer_c.drain()
+            writer_c.close()
+            await writer_c.wait_closed()
+
+            with self.assertRaises(ConnectionError):
+                await async_recv_msg(reader_s)
+        finally:
+            writer_s.close()
+            await asyncio.gather(writer_s.wait_closed(), return_exceptions=True)
+
+    async def test_async_recv_raises_protocol_error_on_invalid_header(self) -> None:
+        server_sock, client_sock = socket.socketpair()
+        reader_s, writer_s = await asyncio.open_connection(sock=server_sock)
+        _, writer_c = await asyncio.open_connection(sock=client_sock)
+
+        try:
+            bad_json = b"{corrupt_json"
+            writer_c.write(struct.pack("!I", len(bad_json)) + bad_json)
+            await writer_c.drain()
+
+            with self.assertRaises(ProtocolError):
+                await async_recv_msg(reader_s)
+        finally:
+            writer_s.close()
+            writer_c.close()
+            await asyncio.gather(
+                writer_s.wait_closed(),
+                writer_c.wait_closed(),
+                return_exceptions=True,
+            )
+
+    async def test_async_recv_raises_protocol_error_on_oversized_header(self) -> None:
+        server_sock, client_sock = socket.socketpair()
+        reader_s, writer_s = await asyncio.open_connection(sock=server_sock)
+        _, writer_c = await asyncio.open_connection(sock=client_sock)
+
+        try:
+            writer_c.write(struct.pack("!I", 70000))
+            await writer_c.drain()
+
+            with self.assertRaises(ProtocolError):
+                await async_recv_msg(reader_s)
+        finally:
+            writer_s.close()
+            writer_c.close()
+            await asyncio.gather(
+                writer_s.wait_closed(),
+                writer_c.wait_closed(),
+                return_exceptions=True,
+            )
+
 
 class TestProtocolEdgeCasesAndStress(unittest.TestCase):
     """Pruebas adicionales para Issue #17 / GitHub #15: Edge cases, payloads grandes y streams continuos."""
@@ -284,7 +358,6 @@ class TestProtocolEdgeCasesAndStress(unittest.TestCase):
         header = {"cmd": "UPLOAD_CHUNK"}
         payload = b"1234567890"
 
-        # Envía prefijo + header + solo los primeros 3 bytes del payload
         header_bytes = json.dumps({"cmd": "UPLOAD_CHUNK", "size": len(payload)}).encode("utf-8")
         prefix = struct.pack("!I", len(header_bytes))
         self.client_sock.sendall(prefix + header_bytes + payload[:3])

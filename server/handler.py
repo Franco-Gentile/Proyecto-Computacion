@@ -40,7 +40,8 @@ class ClientHandler:
                     break
                 except ProtocolError as proto_err:
                     self._send_error("protocol_error", str(proto_err))
-                    continue
+                    self.is_connected = False
+                    break
                 except OSError:
                     self.is_connected = False
                     break
@@ -50,27 +51,40 @@ class ClientHandler:
             self.close()
 
     def dispatch(self, header: dict[str, Any], payload: bytes) -> None:
-        """Despacha el comando recibido a su método correspondiente `cmd_<nombre>`.
-
-        Garantiza que una excepción dentro del comando no mate el hilo de atención.
-        """
+        """Valida la presencia de 'cmd' en el header y delega en `dispatch_command`."""
         raw_cmd = header.get("cmd")
         if not raw_cmd or not isinstance(raw_cmd, str):
             self._send_error("missing_command", "El header debe contener la clave 'cmd'.")
             return
 
-        cmd_name = raw_cmd.strip().lower()
+        self.dispatch_command(raw_cmd, header, payload)
+
+    def dispatch_command(
+        self,
+        cmd: str,
+        header: dict[str, Any],
+        payload: bytes,
+    ) -> None:
+        """Despacha el comando recibido a su método correspondiente `cmd_<nombre>`.
+
+        Garantiza que una excepción dentro del comando no mate el hilo de atención.
+        """
+        if not cmd or not isinstance(cmd, str):
+            self._send_error("missing_command", "El comando debe ser un string no vacío.")
+            return
+
+        cmd_name = cmd.strip().lower()
         method_name = f"cmd_{cmd_name}"
         handler_method = getattr(self, method_name, None)
 
         if not callable(handler_method):
-            self._send_error("unknown_command", f"Comando '{raw_cmd}' no reconocido.")
+            self._send_error("unknown_command", f"Comando '{cmd}' no reconocido.")
             return
 
         try:
             handler_method(header, payload)
         except Exception as exc:
-            logger.exception("Error ejecutando comando %s para %s: %s", raw_cmd, self.client_addr, exc)
+            logger.exception("Error ejecutando comando %s para %s: %s", cmd, self.client_addr, exc)
             self._send_error("internal_error", str(exc))
 
     def cmd_bye(self, header: dict[str, Any], payload: bytes) -> None:

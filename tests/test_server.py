@@ -2,7 +2,6 @@
 
 import socket
 import threading
-import time
 import unittest
 
 from common.protocol import recv_msg, send_msg
@@ -43,6 +42,23 @@ class TestTCPServerListeningSocket(unittest.TestCase):
 class TestTCPServerThreadPerClient(unittest.TestCase):
     """Pruebas para Issue #20 / GitHub #17: Un hilo por cliente atendido concurrentemente."""
 
+    def test_default_handler_factory_uses_client_handler(self) -> None:
+        """Verifica que TCPServer sin handler_factory explícito use ClientHandler por defecto."""
+        server = TCPServer(host="127.0.0.1", port=0)
+        server.start()
+        assert server.server_socket is not None
+        port = server.server_socket.getsockname()[1]
+
+        try:
+            client = socket.create_connection(("127.0.0.1", port), timeout=3.0)
+            send_msg(client, {"cmd": "BYE"})
+            header, _ = recv_msg(client)
+            self.assertEqual(header["status"], "OK")
+            self.assertEqual(header["message"], "bye")
+            client.close()
+        finally:
+            server.stop()
+
     def test_two_clients_handled_in_parallel(self) -> None:
         """Verifica que dos clientes conectados a la vez se atiendan en paralelo en hilos separados."""
         barrier = threading.Barrier(2, timeout=5.0)
@@ -58,7 +74,6 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
                 try:
                     with lock:
                         active_thread_names.append(threading.current_thread().name)
-                    # Ambos hilos deben llegar aquí simultáneamente
                     barrier.wait()
                     send_msg(self.sock, {"status": "OK", "thread": threading.current_thread().name})
                 finally:
@@ -66,6 +81,7 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
 
         server = TCPServer(host="127.0.0.1", port=0, handler_factory=SyncBarrierHandler)
         server.start()
+        assert server.server_socket is not None
         port = server.server_socket.getsockname()[1]
 
         try:
@@ -77,7 +93,6 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
 
             self.assertEqual(h1["status"], "OK")
             self.assertEqual(h2["status"], "OK")
-            # Deben ser dos hilos distintos
             self.assertNotEqual(h1["thread"], h2["thread"])
             self.assertEqual(len(active_thread_names), 2)
             c1.close()

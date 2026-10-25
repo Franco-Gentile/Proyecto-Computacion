@@ -4,6 +4,8 @@ import socket
 import threading
 from typing import Any, Callable
 
+from server.handler import ClientHandler
+
 DEFAULT_HOST: str = "0.0.0.0"
 DEFAULT_PORT: int = 9000
 DEFAULT_BACKLOG: int = 128
@@ -17,7 +19,7 @@ class TCPServer:
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         backlog: int = DEFAULT_BACKLOG,
-        handler_factory: Callable[[socket.socket, tuple[str, int]], Any] | None = None,
+        handler_factory: Callable[[socket.socket, tuple[str, int]], Any] = ClientHandler,
     ) -> None:
         self.host = host
         self.port = port
@@ -70,20 +72,15 @@ class TCPServer:
                     pass
                 break
 
-            if self.handler_factory:
-                handler = self.handler_factory(client_sock, client_addr)
-                target_fn = getattr(handler, "handle_client", None) or getattr(handler, "run", None)
-                if not callable(target_fn):
-                    target_fn = lambda: None
-
-                thread = threading.Thread(
-                    target=target_fn,
-                    name=f"ClientThread-{client_addr[0]}:{client_addr[1]}",
-                    daemon=True,
-                )
-                with self._lock:
-                    self._client_threads.append(thread)
-                thread.start()
+            handler = self.handler_factory(client_sock, client_addr)
+            thread = threading.Thread(
+                target=handler.handle_client,
+                name=f"ClientThread-{client_addr[0]}:{client_addr[1]}",
+                daemon=True,
+            )
+            with self._lock:
+                self._client_threads.append(thread)
+            thread.start()
 
     def stop(self) -> None:
         """Detiene la aceptación de conexiones y cierra los sockets."""

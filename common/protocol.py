@@ -19,15 +19,8 @@ class ProtocolError(Exception):
     """Error en el formato, framing o deserialización del protocolo."""
 
 
-def send_msg(
-    sock: socket.socket,
-    header: dict[str, Any],
-    payload: bytes = b"",
-) -> None:
-    """Envía un mensaje atómico con framing [4 bytes len][header JSON][payload].
-
-    Garantiza el envío completo mediante `socket.sendall()`.
-    """
+def _encode_frame(header: dict[str, Any], payload: bytes = b"") -> bytes:
+    """Construye los bytes completos de una trama `[4B len][header JSON][payload]`."""
     if not isinstance(header, dict):
         raise TypeError("El header debe ser un diccionario.")
     if payload is None:
@@ -44,7 +37,51 @@ def send_msg(
         raise ProtocolError(f"No se pudo serializar el header a JSON: {exc}") from exc
 
     prefix = struct.pack("!I", len(header_bytes))
-    sock.sendall(prefix + header_bytes + bytes(payload))
+    return prefix + header_bytes + bytes(payload)
+
+
+def _unpack_and_validate_header_len(prefix: bytes) -> int:
+    """Desempaqueta el prefijo de 4 bytes y verifica que no supere MAX_HEADER_SIZE."""
+    header_len = struct.unpack("!I", prefix)[0]
+    if header_len > MAX_HEADER_SIZE:
+        raise ProtocolError(
+            f"El largo del header ({header_len} B) supera el límite permitido ({MAX_HEADER_SIZE} B)."
+        )
+    return header_len
+
+
+def _decode_and_validate_header(header_bytes: bytes) -> tuple[dict[str, Any], int]:
+    """Deserializa el JSON del header y valida su estructura y el campo 'size'."""
+    try:
+        header = json.loads(header_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise ProtocolError(f"Header JSON inválido: {exc}") from exc
+
+    if not isinstance(header, dict):
+        raise ProtocolError("El header debe ser un objeto/diccionario JSON.")
+
+    payload_size = header.get("size", 0)
+    if (
+        isinstance(payload_size, bool)
+        or not isinstance(payload_size, int)
+        or payload_size < 0
+    ):
+        raise ProtocolError("El campo 'size' del header debe ser un entero no negativo.")
+
+    return header, payload_size
+
+
+def send_msg(
+    sock: socket.socket,
+    header: dict[str, Any],
+    payload: bytes = b"",
+) -> None:
+    """Envía un mensaje atómico con framing [4 bytes len][header JSON][payload].
+
+    Garantiza el envío completo mediante `socket.sendall()`.
+    """
+    frame = _encode_frame(header, payload)
+    sock.sendall(frame)
 
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes:
@@ -74,32 +111,11 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
 
 
 def recv_msg(sock: socket.socket) -> tuple[dict[str, Any], bytes]:
-    """Recibe un mensaje atómico del socket `(header, payload)`.
-
-    Lee el prefijo de 4 bytes con la longitud del header, deserializa el header JSON
-    y lee exactamente los bytes del payload según el campo `header["size"]`.
-    """
+    """Recibe un mensaje atómico del socket `(header, payload)`."""
     prefix = _recv_exact(sock, 4)
-    header_len = struct.unpack("!I", prefix)[0]
-
-    if header_len > MAX_HEADER_SIZE:
-        raise ProtocolError(
-            f"El largo del header ({header_len} B) supera el límite permitido ({MAX_HEADER_SIZE} B)."
-        )
-
+    header_len = _unpack_and_validate_header_len(prefix)
     header_bytes = _recv_exact(sock, header_len)
-    try:
-        header = json.loads(header_bytes.decode("utf-8"))
-    except Exception as exc:
-        raise ProtocolError(f"Header JSON inválido: {exc}") from exc
-
-    if not isinstance(header, dict):
-        raise ProtocolError("El header debe ser un objeto/diccionario JSON.")
-
-    payload_size = header.get("size", 0)
-    if not isinstance(payload_size, int) or payload_size < 0:
-        raise ProtocolError("El campo 'size' del header debe ser un entero no negativo.")
-
+    header, payload_size = _decode_and_validate_header(header_bytes)
     payload = _recv_exact(sock, payload_size)
     return header, payload
 
@@ -110,23 +126,8 @@ async def async_send_msg(
     payload: bytes = b"",
 ) -> None:
     """Envía un mensaje de forma asincrónica sobre un StreamWriter con el mismo framing binario."""
-    if not isinstance(header, dict):
-        raise TypeError("El header debe ser un diccionario.")
-    if payload is None:
-        payload = b""
-    elif not isinstance(payload, (bytes, bytearray, memoryview)):
-        raise TypeError("El payload debe ser de tipo bytes, bytearray o memoryview.")
-
-    header_dict = dict(header)
-    header_dict["size"] = len(payload)
-
-    try:
-        header_bytes = json.dumps(header_dict, separators=(",", ":")).encode("utf-8")
-    except (TypeError, ValueError) as exc:
-        raise ProtocolError(f"No se pudo serializar el header a JSON: {exc}") from exc
-
-    prefix = struct.pack("!I", len(header_bytes))
-    writer.write(prefix + header_bytes + bytes(payload))
+    frame = _encode_frame(header, payload)
+    writer.write(frame)
     await writer.drain()
 
 
@@ -141,11 +142,7 @@ async def async_recv_msg(
             f"Conexión cerrada prematuramente: esperados 4 bytes de prefijo, recibidos {len(exc.partial)}."
         ) from exc
 
-    header_len = struct.unpack("!I", prefix)[0]
-    if header_len > MAX_HEADER_SIZE:
-        raise ProtocolError(
-            f"El largo del header ({header_len} B) supera el límite permitido ({MAX_HEADER_SIZE} B)."
-        )
+    header_len = _unpack_and_validate_header_len(prefix)
 
     try:
         header_bytes = await reader.readexactly(header_len)
@@ -154,17 +151,7 @@ async def async_recv_msg(
             f"Conexión cerrada prematuramente al leer header: esperados {header_len} bytes, recibidos {len(exc.partial)}."
         ) from exc
 
-    try:
-        header = json.loads(header_bytes.decode("utf-8"))
-    except Exception as exc:
-        raise ProtocolError(f"Header JSON inválido: {exc}") from exc
-
-    if not isinstance(header, dict):
-        raise ProtocolError("El header debe ser un objeto/diccionario JSON.")
-
-    payload_size = header.get("size", 0)
-    if not isinstance(payload_size, int) or payload_size < 0:
-        raise ProtocolError("El campo 'size' del header debe ser un entero no negativo.")
+    header, payload_size = _decode_and_validate_header(header_bytes)
 
     try:
         payload = await reader.readexactly(payload_size)

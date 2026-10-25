@@ -1,6 +1,7 @@
 """Tests para ClientHandler y despacho de comandos (server/handler.py - Issue #23)."""
 
 import socket
+import struct
 import threading
 import unittest
 
@@ -44,6 +45,16 @@ class TestClientHandlerDispatch(unittest.TestCase):
         handler.is_connected = False
         thread.join(timeout=1.0)
 
+    def test_dispatch_command_method_signature(self) -> None:
+        """Verifica el contrato de dispatch_command(cmd, header, payload) del diagrama UML."""
+        handler = DummyCommandHandler(self.server_sock, ("127.0.0.1", 12345))
+        handler.dispatch_command("ECHO", {"cmd": "ECHO", "msg": "directo"}, b"123")
+
+        header, payload = recv_msg(self.client_sock)
+        self.assertEqual(header["status"], "OK")
+        self.assertEqual(header["echo"], "directo")
+        self.assertEqual(payload, b"123")
+
     def test_unknown_command_returns_error(self) -> None:
         handler = DummyCommandHandler(self.server_sock, ("127.0.0.1", 12345))
         thread = threading.Thread(target=handler.handle_client, daemon=True)
@@ -81,6 +92,23 @@ class TestClientHandlerDispatch(unittest.TestCase):
 
         handler.is_connected = False
         thread.join(timeout=1.0)
+
+    def test_protocol_error_sends_error_and_closes_connection(self) -> None:
+        """Ante un ProtocolError (trama corrupta/desincronizada) responde ERROR y cierra el socket."""
+        handler = DummyCommandHandler(self.server_sock, ("127.0.0.1", 12345))
+        thread = threading.Thread(target=handler.handle_client, daemon=True)
+        thread.start()
+
+        # Enviar un header de tamaño inválido (> MAX_HEADER_SIZE) seguido de basura
+        self.client_sock.sendall(struct.pack("!I", 99999) + b"residual-garbage")
+        header, _ = recv_msg(self.client_sock)
+
+        self.assertEqual(header["status"], "ERROR")
+        self.assertEqual(header["error"], "protocol_error")
+
+        thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(handler.is_connected)
 
     def test_cmd_bye_disconnects_cleanly(self) -> None:
         handler = ClientHandler(self.server_sock, ("127.0.0.1", 12345))
