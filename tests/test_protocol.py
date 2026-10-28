@@ -328,12 +328,18 @@ class TestProtocolEdgeCasesAndStress(unittest.TestCase):
         large_payload = b"X" * (2 * 1024 * 1024)
         header = {"cmd": "UPLOAD_CHUNK", "seq": 1}
 
-        send_msg(self.client_sock, header, large_payload)
-        received_header, received_payload = recv_msg(self.server_sock)
+        def sender() -> None:
+            send_msg(self.client_sock, header, large_payload)
 
-        self.assertEqual(received_header["size"], len(large_payload))
-        self.assertEqual(len(received_payload), len(large_payload))
-        self.assertEqual(received_payload, large_payload)
+        sender_thread = threading.Thread(target=sender)
+        sender_thread.start()
+        try:
+            received_header, received_payload = recv_msg(self.server_sock)
+            self.assertEqual(received_header["size"], len(large_payload))
+            self.assertEqual(len(received_payload), len(large_payload))
+            self.assertEqual(received_payload, large_payload)
+        finally:
+            sender_thread.join(timeout=2.0)
 
     def test_multiple_consecutive_messages_in_stream(self) -> None:
         messages = [
