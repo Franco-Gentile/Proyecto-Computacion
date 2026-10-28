@@ -5,6 +5,7 @@ import threading
 import unittest
 
 from common.protocol import recv_msg, send_msg
+from server.handler import ClientHandler
 from server.server import TCPServer
 
 
@@ -161,8 +162,6 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
             if calls == 1:
                 raise RuntimeError("Error simulado al instanciar handler")
             return ClientHandler(client_sock, addr)
-
-        from server.handler import ClientHandler
 
         server = TCPServer(host="127.0.0.1", port=0, handler_factory=flaky_factory)
         server.start()
