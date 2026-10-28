@@ -160,17 +160,14 @@ class TestDomainPureRules(unittest.TestCase):
     def test_calculate_desired_workers_scales_up_fast_and_clamps(self) -> None:
         config = ScalingConfig(min_workers=1, max_workers=6, tasks_per_worker=4)
 
-        # Cola vacía -> respeta mínimo
         self.assertEqual(
             calculate_desired_workers(pending_tasks=0, current_workers=1, config=config),
             1,
         )
-        # Carga media (15 tareas / 4 por worker = ceil(3.75) = 4) -> sube rápido a 4
         self.assertEqual(
             calculate_desired_workers(pending_tasks=15, current_workers=1, config=config),
             4,
         )
-        # Carga alta -> limita en max_workers
         self.assertEqual(
             calculate_desired_workers(pending_tasks=100, current_workers=2, config=config),
             6,
@@ -185,7 +182,6 @@ class TestDomainPureRules(unittest.TestCase):
         )
         now = datetime(2026, 10, 25, 18, 0, 0, tzinfo=timezone.utc)
 
-        # En ventana de cooldown tras una subida reciente: no baja
         self.assertEqual(
             calculate_desired_workers(
                 pending_tasks=0,
@@ -196,7 +192,6 @@ class TestDomainPureRules(unittest.TestCase):
             ),
             4,
         )
-        # Pasado el cooldown: baja gradualmente de a 1 worker por vez (de 4 a 3)
         self.assertEqual(
             calculate_desired_workers(
                 pending_tasks=0,
@@ -207,7 +202,6 @@ class TestDomainPureRules(unittest.TestCase):
             ),
             3,
         )
-        # Si current_workers excede max_workers, el resultado queda acotado a max_workers
         self.assertEqual(
             calculate_desired_workers(
                 pending_tasks=0,
@@ -220,7 +214,7 @@ class TestDomainPureRules(unittest.TestCase):
         )
 
     def test_calculate_desired_workers_no_oscillation_sequence(self) -> None:
-        """Simula una secuencia temporal de carga para validar histéresis y cooldown (Issue #65)."""
+        """Simula una secuencia temporal de carga para validar histéresis y cooldown."""
         config = ScalingConfig(
             min_workers=1,
             max_workers=5,
@@ -229,7 +223,6 @@ class TestDomainPureRules(unittest.TestCase):
         )
         base_time = datetime(2026, 10, 25, 18, 0, 0, tzinfo=timezone.utc)
 
-        # t=0s: Estado base sin carga
         workers = calculate_desired_workers(
             pending_tasks=0,
             current_workers=1,
@@ -238,7 +231,6 @@ class TestDomainPureRules(unittest.TestCase):
         )
         self.assertEqual(workers, 1)
 
-        # t=10s: Pico súbito de 20 tareas (20/4 = 5 workers)
         scale_up_time = base_time + timedelta(seconds=10)
         workers = calculate_desired_workers(
             pending_tasks=20,
@@ -248,8 +240,6 @@ class TestDomainPureRules(unittest.TestCase):
         )
         self.assertEqual(workers, 5)
 
-        # t=15s: La carga cae a 0 inmediatamente (5s después del pico, dentro de cooldown de 15s)
-        # Debe mantenerse en 5 workers sin oscilar ni bajar abruptamente
         workers = calculate_desired_workers(
             pending_tasks=0,
             current_workers=5,
@@ -259,7 +249,6 @@ class TestDomainPureRules(unittest.TestCase):
         )
         self.assertEqual(workers, 5)
 
-        # t=24s: Sigue dentro de la ventana de cooldown (14s transcurridos < 15s)
         workers = calculate_desired_workers(
             pending_tasks=0,
             current_workers=5,
@@ -269,7 +258,6 @@ class TestDomainPureRules(unittest.TestCase):
         )
         self.assertEqual(workers, 5)
 
-        # t=26s: Cooldown vencido (16s transcurridos > 15s) -> baja de a 1 (5 -> 4)
         workers = calculate_desired_workers(
             pending_tasks=0,
             current_workers=5,
@@ -279,7 +267,6 @@ class TestDomainPureRules(unittest.TestCase):
         )
         self.assertEqual(workers, 4)
 
-        # t=28s: Próximo ciclo sin carga -> baja de a 1 (4 -> 3)
         workers = calculate_desired_workers(
             pending_tasks=0,
             current_workers=4,
@@ -289,7 +276,6 @@ class TestDomainPureRules(unittest.TestCase):
         )
         self.assertEqual(workers, 3)
 
-        # t=30s: Próximo ciclo sin carga -> baja de a 1 (3 -> 2)
         workers = calculate_desired_workers(
             pending_tasks=0,
             current_workers=3,
@@ -299,7 +285,6 @@ class TestDomainPureRules(unittest.TestCase):
         )
         self.assertEqual(workers, 2)
 
-        # t=32s: Próximo ciclo sin carga -> baja de a 1 (2 -> 1)
         workers = calculate_desired_workers(
             pending_tasks=0,
             current_workers=2,
@@ -309,7 +294,6 @@ class TestDomainPureRules(unittest.TestCase):
         )
         self.assertEqual(workers, 1)
 
-        # t=34s: Ya en el mínimo -> se mantiene en 1
         workers = calculate_desired_workers(
             pending_tasks=0,
             current_workers=1,
@@ -440,10 +424,8 @@ class TestDomainPortsProtocols(unittest.TestCase):
 
         for protocol_cls, methods in expected_ports.items():
             with self.subTest(protocol=protocol_cls.__name__):
-                # 1. Caso negativo: un objeto plano no cumple el contrato
                 self.assertFalse(isinstance(object(), protocol_cls))
 
-                # 2. Caso positivo: una clase dummy con los métodos requeridos cumple el contrato
                 dummy_class = type(
                     f"Dummy{protocol_cls.__name__}",
                     (),
@@ -455,7 +437,6 @@ class TestDomainPortsProtocols(unittest.TestCase):
                     f"{protocol_cls.__name__} no reconoció a dummy_instance mediante isinstance.",
                 )
 
-                # 3. Métodos declarados
                 members = {
                     name
                     for name, _ in inspect.getmembers(

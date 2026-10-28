@@ -1,4 +1,4 @@
-"""Tests para verificar la estructura base de paquetes del repositorio (Issue #1)."""
+"""Tests para verificar la estructura base de paquetes del repositorio."""
 
 import importlib
 from pathlib import Path
