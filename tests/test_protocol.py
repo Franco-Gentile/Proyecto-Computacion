@@ -8,6 +8,8 @@ import threading
 import unittest
 
 from common.protocol import (
+    MAX_HEADER_SIZE,
+    MAX_PAYLOAD_SIZE,
     ProtocolError,
     _recv_exact,
     async_recv_msg,
@@ -364,6 +366,27 @@ class TestProtocolEdgeCasesAndStress(unittest.TestCase):
         self.client_sock.close()
 
         with self.assertRaises(ConnectionError):
+            recv_msg(self.server_sock)
+
+    def test_clean_eof_raises_eof_error(self) -> None:
+        """Cierre limpio del socket antes de enviar una trama lanza EOFError (5.2)."""
+        self.client_sock.close()
+        with self.assertRaises(EOFError):
+            recv_msg(self.server_sock)
+
+    def test_send_msg_rejects_oversized_header(self) -> None:
+        """Fail-fast en _encode_frame cuando el header supera MAX_HEADER_SIZE (2.2)."""
+        huge_header = {"cmd": "TEST", "junk": "A" * (MAX_HEADER_SIZE + 100)}
+        with self.assertRaises(ProtocolError):
+            send_msg(self.client_sock, huge_header)
+
+    def test_recv_msg_rejects_oversized_payload(self) -> None:
+        """Protección DoS cuando header['size'] supera MAX_PAYLOAD_SIZE (2.1)."""
+        raw_header = json.dumps({"cmd": "UPLOAD", "size": MAX_PAYLOAD_SIZE + 1}).encode("utf-8")
+        prefix = struct.pack("!I", len(raw_header))
+        self.client_sock.sendall(prefix + raw_header)
+
+        with self.assertRaises(ProtocolError):
             recv_msg(self.server_sock)
 
 

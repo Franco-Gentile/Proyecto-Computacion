@@ -1,10 +1,13 @@
 """Servidor TCP multi-hilo para atención concurrente de clientes."""
 
+import logging
 import socket
 import threading
 from typing import Any, Callable
 
 from server.handler import ClientHandler
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_HOST: str = "0.0.0.0"
 DEFAULT_PORT: int = 9000
@@ -29,6 +32,7 @@ class TCPServer:
         self._is_running = False
         self._listener_thread: threading.Thread | None = None
         self._client_threads: list[threading.Thread] = []
+        self._client_sockets: set[socket.socket] = set()
         self._lock = threading.Lock()
 
     def create_server_socket(self) -> socket.socket:
@@ -55,6 +59,22 @@ class TCPServer:
         )
         self._listener_thread.start()
 
+    def _run_client(self, handler: Any, client_sock: socket.socket) -> None:
+        """Ejecuta el handler del cliente y garantiza la limpieza del socket y registro."""
+        try:
+            handler.handle_client()
+        finally:
+            try:
+                client_sock.close()
+            except OSError:
+                pass
+            current = threading.current_thread()
+            with self._lock:
+                self._client_sockets.discard(client_sock)
+                self._client_threads = [
+                    t for t in self._client_threads if t is not current and t.is_alive()
+                ]
+
     def _accept_loop(self) -> None:
         """Loop que acepta conexiones entrantes y despacha cada cliente a un nuevo hilo."""
         while self._is_running and self.server_socket:
@@ -72,27 +92,55 @@ class TCPServer:
                     pass
                 break
 
-            handler = self.handler_factory(client_sock, client_addr)
-            thread = threading.Thread(
-                target=handler.handle_client,
-                name=f"ClientThread-{client_addr[0]}:{client_addr[1]}",
-                daemon=True,
-            )
-            with self._lock:
-                self._client_threads.append(thread)
-            thread.start()
+            try:
+                handler = self.handler_factory(client_sock, client_addr)
+                thread = threading.Thread(
+                    target=self._run_client,
+                    args=(handler, client_sock),
+                    name=f"ClientThread-{client_addr[0]}:{client_addr[1]}",
+                    daemon=True,
+                )
+                with self._lock:
+                    self._client_threads = [t for t in self._client_threads if t.is_alive()]
+                    self._client_threads.append(thread)
+                    self._client_sockets.add(client_sock)
+                thread.start()
+            except Exception as exc:
+                logger.exception("Error al inicializar cliente %s: %s", client_addr, exc)
+                with self._lock:
+                    self._client_sockets.discard(client_sock)
+                    self._client_threads = [t for t in self._client_threads if t.is_alive()]
+                try:
+                    client_sock.close()
+                except OSError:
+                    pass
 
     def stop(self) -> None:
-        """Detiene la aceptación de conexiones y cierra los sockets."""
+        """Detiene la aceptación de conexiones y cierra los sockets activos."""
         self._is_running = False
         self.close()
         if self._listener_thread and self._listener_thread.is_alive():
             self._listener_thread.join(timeout=2.0)
+
         with self._lock:
-            for thread in self._client_threads:
-                if thread.is_alive():
-                    thread.join(timeout=1.0)
+            active_sockets = list(self._client_sockets)
+            active_threads = list(self._client_threads)
+            self._client_sockets.clear()
             self._client_threads.clear()
+
+        for sock in active_sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+        for thread in active_threads:
+            if thread.is_alive():
+                thread.join(timeout=1.0)
 
     def close(self) -> None:
         """Cierra el socket principal de escucha si está abierto."""

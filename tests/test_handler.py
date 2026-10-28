@@ -42,8 +42,9 @@ class TestClientHandlerDispatch(unittest.TestCase):
         self.assertEqual(header["status"], "OK")
         self.assertEqual(header["echo"], "hola")
 
-        handler.is_connected = False
+        self.client_sock.close()
         thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
 
     def test_dispatch_command_method_signature(self) -> None:
         """Verifica el contrato de dispatch_command(cmd, header, payload) del diagrama UML."""
@@ -66,8 +67,19 @@ class TestClientHandlerDispatch(unittest.TestCase):
         self.assertEqual(header["status"], "ERROR")
         self.assertEqual(header["error"], "unknown_command")
 
-        handler.is_connected = False
+        self.client_sock.close()
         thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
+
+    def test_invalid_syntax_command_returns_error(self) -> None:
+        """Valida que comandos con sintaxis inválida o prefijo '_' se rechacen como unknown_command."""
+        handler = DummyCommandHandler(self.server_sock, ("127.0.0.1", 12345))
+        for bad_cmd in ("   ", "_send_error", "__init__", "echo; rm -rf", "cmd with spaces"):
+            with self.subTest(cmd=bad_cmd):
+                handler.dispatch_command(bad_cmd, {"cmd": bad_cmd}, b"")
+                header, _ = recv_msg(self.client_sock)
+                self.assertEqual(header["status"], "ERROR")
+                self.assertEqual(header["error"], "unknown_command")
 
     def test_exception_in_command_does_not_kill_thread(self) -> None:
         """Criterio clave: Una excepción dentro de un comando no mata el hilo y permite seguir atendiendo."""
@@ -90,8 +102,9 @@ class TestClientHandlerDispatch(unittest.TestCase):
         self.assertEqual(header2["status"], "OK")
         self.assertEqual(header2["echo"], "recuperado")
 
-        handler.is_connected = False
+        self.client_sock.close()
         thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
 
     def test_protocol_error_sends_error_and_closes_connection(self) -> None:
         """Ante un ProtocolError (trama corrupta/desincronizada) responde ERROR y cierra el socket."""

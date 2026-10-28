@@ -13,6 +13,8 @@ import struct
 from typing import Any
 
 MAX_HEADER_SIZE: int = 65536
+MAX_PAYLOAD_SIZE: int = 64 * 1024 * 1024
+RECV_BUFFER_SIZE: int = 65536
 
 
 class ProtocolError(Exception):
@@ -28,13 +30,24 @@ def _encode_frame(header: dict[str, Any], payload: bytes = b"") -> bytes:
     elif not isinstance(payload, (bytes, bytearray, memoryview)):
         raise TypeError("El payload debe ser de tipo bytes, bytearray o memoryview.")
 
+    payload_len = len(payload)
+    if payload_len > MAX_PAYLOAD_SIZE:
+        raise ProtocolError(
+            f"El payload ({payload_len} B) supera el límite de {MAX_PAYLOAD_SIZE} B."
+        )
+
     header_dict = dict(header)
-    header_dict["size"] = len(payload)
+    header_dict["size"] = payload_len
 
     try:
         header_bytes = json.dumps(header_dict, separators=(",", ":")).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise ProtocolError(f"No se pudo serializar el header a JSON: {exc}") from exc
+
+    if len(header_bytes) > MAX_HEADER_SIZE:
+        raise ProtocolError(
+            f"El header ({len(header_bytes)} B) supera el límite de {MAX_HEADER_SIZE} B."
+        )
 
     prefix = struct.pack("!I", len(header_bytes))
     return prefix + header_bytes + bytes(payload)
@@ -68,6 +81,11 @@ def _decode_and_validate_header(header_bytes: bytes) -> tuple[dict[str, Any], in
     ):
         raise ProtocolError("El campo 'size' del header debe ser un entero no negativo.")
 
+    if payload_size > MAX_PAYLOAD_SIZE:
+        raise ProtocolError(
+            f"El tamaño del payload ({payload_size} B) supera el límite permitido ({MAX_PAYLOAD_SIZE} B)."
+        )
+
     return header, payload_size
 
 
@@ -85,38 +103,45 @@ def send_msg(
 
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes:
-    """Lee exactamente `n` bytes del socket.
+    """Lee exactamente `n` bytes del socket sin copias intermedias.
 
-    Repite lecturas hasta completar los `n` bytes solicitados o lanza `ConnectionError`
-    si el socket remoto se cierra antes de completarlos.
+    Lanza `EOFError` si el socket se cierra limpiamente antes de leer el primer byte
+    (`bytes_read == 0`), o `ConnectionError` si se interrumpe a mitad de lectura.
     """
     if n < 0:
         raise ValueError("La cantidad de bytes a leer no puede ser negativa.")
     if n == 0:
         return b""
 
-    chunks: list[bytes] = []
+    buf = bytearray(n)
+    view = memoryview(buf)
     bytes_read = 0
 
     while bytes_read < n:
-        chunk = sock.recv(min(n - bytes_read, 4096))
-        if not chunk:
+        nbytes = sock.recv_into(view[bytes_read:], min(n - bytes_read, RECV_BUFFER_SIZE))
+        if nbytes == 0:
+            if bytes_read == 0:
+                raise EOFError("Conexión cerrada de forma limpia por el par remoto (EOF).")
             raise ConnectionError(
-                f"Conexión cerrada prematuramente: se esperaban {n} bytes, pero se recibieron {bytes_read}."
+                f"Conexión cerrada prematuramente: esperados {n} bytes, recibidos {bytes_read}."
             )
-        chunks.append(chunk)
-        bytes_read += len(chunk)
+        bytes_read += nbytes
 
-    return b"".join(chunks)
+    return bytes(buf)
 
 
 def recv_msg(sock: socket.socket) -> tuple[dict[str, Any], bytes]:
     """Recibe un mensaje atómico del socket `(header, payload)`."""
     prefix = _recv_exact(sock, 4)
     header_len = _unpack_and_validate_header_len(prefix)
-    header_bytes = _recv_exact(sock, header_len)
-    header, payload_size = _decode_and_validate_header(header_bytes)
-    payload = _recv_exact(sock, payload_size)
+    try:
+        header_bytes = _recv_exact(sock, header_len)
+        header, payload_size = _decode_and_validate_header(header_bytes)
+        payload = _recv_exact(sock, payload_size)
+    except EOFError as exc:
+        raise ConnectionError(
+            "Conexión cerrada prematuramente a mitad de trama."
+        ) from exc
     return header, payload
 
 
@@ -138,6 +163,8 @@ async def async_recv_msg(
     try:
         prefix = await reader.readexactly(4)
     except asyncio.IncompleteReadError as exc:
+        if len(exc.partial) == 0:
+            raise EOFError("Conexión cerrada de forma limpia por el par remoto (EOF).") from exc
         raise ConnectionError(
             f"Conexión cerrada prematuramente: esperados 4 bytes de prefijo, recibidos {len(exc.partial)}."
         ) from exc

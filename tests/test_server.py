@@ -100,6 +100,96 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
         finally:
             server.stop()
 
+    def test_disconnected_client_threads_and_sockets_are_cleaned_up(self) -> None:
+        """Verifica que al desconectarse clientes no queden fugas en _client_threads ni _client_sockets."""
+        server = TCPServer(host="127.0.0.1", port=0)
+        server.start()
+        assert server.server_socket is not None
+        port = server.server_socket.getsockname()[1]
+
+        try:
+            for _ in range(5):
+                client = socket.create_connection(("127.0.0.1", port), timeout=3.0)
+                send_msg(client, {"cmd": "BYE"})
+                recv_msg(client)
+                client.close()
+
+            # Esperar brevemente a que el último hilo ejecute su bloque finally
+            for t in list(server._client_threads):
+                t.join(timeout=1.0)
+
+            with server._lock:
+                self.assertEqual(len(server._client_threads), 0)
+                self.assertEqual(len(server._client_sockets), 0)
+        finally:
+            server.stop()
+
+    def test_stop_closes_idle_clients_rapidly(self) -> None:
+        """Verifica que stop() cierre los sockets de clientes inactivos sin bloqueo O(N)."""
+        import time
+
+        server = TCPServer(host="127.0.0.1", port=0)
+        server.start()
+        assert server.server_socket is not None
+        port = server.server_socket.getsockname()[1]
+
+        clients = [
+            socket.create_connection(("127.0.0.1", port), timeout=3.0)
+            for _ in range(5)
+        ]
+        try:
+            # Asegurar que el servidor haya aceptado las conexiones
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                with server._lock:
+                    if len(server._client_sockets) == 5:
+                        break
+                time.sleep(0.01)
+
+            start_t = time.monotonic()
+            server.stop()
+            elapsed = time.monotonic() - start_t
+
+            self.assertLess(elapsed, 1.5)
+            with server._lock:
+                self.assertEqual(len(server._client_threads), 0)
+                self.assertEqual(len(server._client_sockets), 0)
+        finally:
+            for c in clients:
+                c.close()
+
+    def test_handler_factory_exception_does_not_kill_listener(self) -> None:
+        """Verifica que un fallo en handler_factory no mate el hilo listener (1.3)."""
+        calls = 0
+
+        def flaky_factory(client_sock: socket.socket, addr: tuple[str, int]) -> ClientHandler:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("Error simulado al instanciar handler")
+            return ClientHandler(client_sock, addr)
+
+        from server.handler import ClientHandler
+
+        server = TCPServer(host="127.0.0.1", port=0, handler_factory=flaky_factory)
+        server.start()
+        assert server.server_socket is not None
+        port = server.server_socket.getsockname()[1]
+
+        try:
+            # 1er cliente falla en handler_factory
+            c1 = socket.create_connection(("127.0.0.1", port), timeout=3.0)
+            c1.close()
+
+            # 2do cliente debe ser atendido con normalidad porque el listener sigue vivo
+            c2 = socket.create_connection(("127.0.0.1", port), timeout=3.0)
+            send_msg(c2, {"cmd": "BYE"})
+            header, _ = recv_msg(c2)
+            self.assertEqual(header["status"], "OK")
+            c2.close()
+        finally:
+            server.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

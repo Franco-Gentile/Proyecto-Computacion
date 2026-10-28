@@ -74,6 +74,10 @@ class ClientHandler:
             return
 
         cmd_name = cmd.strip().lower()
+        if not cmd_name or not cmd_name.isidentifier() or cmd_name.startswith("_"):
+            self._send_error("unknown_command", f"Comando '{cmd}' no válido.")
+            return
+
         method_name = f"cmd_{cmd_name}"
         handler_method = getattr(self, method_name, None)
 
@@ -105,6 +109,10 @@ class ClientHandler:
     def close(self) -> None:
         """Cierra el socket y libera recursos asociados."""
         self.is_connected = False
+        try:
+            self.client_socket.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
         try:
             self.client_socket.close()
         except OSError:
