@@ -9,7 +9,7 @@ from server.server import TCPServer
 
 
 class TestTCPServerListeningSocket(unittest.TestCase):
-    """Pruebas para Issue #19 / GitHub #16: Socket de escucha TCP con SO_REUSEADDR."""
+    """Pruebas para el socket de escucha TCP con SO_REUSEADDR."""
 
     def test_create_listening_socket_sets_reuseaddr(self) -> None:
         server = TCPServer(host="127.0.0.1", port=0)
@@ -40,10 +40,9 @@ class TestTCPServerListeningSocket(unittest.TestCase):
 
 
 class TestTCPServerThreadPerClient(unittest.TestCase):
-    """Pruebas para Issue #20 / GitHub #17: Un hilo por cliente atendido concurrentemente."""
+    """Pruebas de atención concurrente de clientes y ciclo de vida del servidor."""
 
     def test_default_handler_factory_uses_client_handler(self) -> None:
-        """Verifica que TCPServer sin handler_factory explícito use ClientHandler por defecto."""
         server = TCPServer(host="127.0.0.1", port=0)
         server.start()
         assert server.server_socket is not None
@@ -60,7 +59,6 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
             server.stop()
 
     def test_two_clients_handled_in_parallel(self) -> None:
-        """Verifica que dos clientes conectados a la vez se atiendan en paralelo en hilos separados."""
         barrier = threading.Barrier(2, timeout=5.0)
         active_thread_names: list[str] = []
         lock = threading.Lock()
@@ -101,7 +99,6 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
             server.stop()
 
     def test_disconnected_client_threads_and_sockets_are_cleaned_up(self) -> None:
-        """Verifica que al desconectarse clientes no queden fugas en _client_threads ni _client_sockets."""
         server = TCPServer(host="127.0.0.1", port=0)
         server.start()
         assert server.server_socket is not None
@@ -114,7 +111,6 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
                 recv_msg(client)
                 client.close()
 
-            # Esperar brevemente a que el último hilo ejecute su bloque finally
             for t in list(server._client_threads):
                 t.join(timeout=1.0)
 
@@ -125,7 +121,6 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
             server.stop()
 
     def test_stop_closes_idle_clients_rapidly(self) -> None:
-        """Verifica que stop() cierre los sockets de clientes inactivos sin bloqueo O(N)."""
         import time
 
         server = TCPServer(host="127.0.0.1", port=0)
@@ -138,7 +133,6 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
             for _ in range(5)
         ]
         try:
-            # Asegurar que el servidor haya aceptado las conexiones
             deadline = time.monotonic() + 2.0
             while time.monotonic() < deadline:
                 with server._lock:
@@ -159,7 +153,6 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
                 c.close()
 
     def test_handler_factory_exception_does_not_kill_listener(self) -> None:
-        """Verifica que un fallo en handler_factory no mate el hilo listener (1.3)."""
         calls = 0
 
         def flaky_factory(client_sock: socket.socket, addr: tuple[str, int]) -> ClientHandler:
@@ -177,11 +170,9 @@ class TestTCPServerThreadPerClient(unittest.TestCase):
         port = server.server_socket.getsockname()[1]
 
         try:
-            # 1er cliente falla en handler_factory
             c1 = socket.create_connection(("127.0.0.1", port), timeout=3.0)
             c1.close()
 
-            # 2do cliente debe ser atendido con normalidad porque el listener sigue vivo
             c2 = socket.create_connection(("127.0.0.1", port), timeout=3.0)
             send_msg(c2, {"cmd": "BYE"})
             header, _ = recv_msg(c2)

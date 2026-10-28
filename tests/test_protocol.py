@@ -20,7 +20,7 @@ from common.protocol import (
 
 
 class TestSendMsgSync(unittest.TestCase):
-    """Pruebas para Issue #13 / GitHub #11: Envío de mensajes (sync)."""
+    """Pruebas de envío de mensajes sincrónicos."""
 
     def setUp(self) -> None:
         self.server_sock, self.client_sock = socket.socketpair()
@@ -66,7 +66,7 @@ class TestSendMsgSync(unittest.TestCase):
 
 
 class TestRecvExactSync(unittest.TestCase):
-    """Pruebas para Issue #14 / GitHub #12: Recepción exacta de bytes (sync)."""
+    """Pruebas de recepción exacta de bytes."""
 
     def setUp(self) -> None:
         self.server_sock, self.client_sock = socket.socketpair()
@@ -108,7 +108,7 @@ class TestRecvExactSync(unittest.TestCase):
 
 
 class TestRecvMsgSync(unittest.TestCase):
-    """Pruebas para Issue #15 / GitHub #13: Recepción de mensajes (sync)."""
+    """Pruebas de recepción de mensajes sincrónicos."""
 
     def setUp(self) -> None:
         self.server_sock, self.client_sock = socket.socketpair()
@@ -180,7 +180,7 @@ class TestRecvMsgSync(unittest.TestCase):
 
 
 class TestAsyncProtocol(unittest.IsolatedAsyncioTestCase):
-    """Pruebas para Issue #16 / GitHub #14: Envío y recepción async."""
+    """Pruebas de protocolo asincrónico."""
 
     async def test_async_send_and_recv_roundtrip(self) -> None:
         server_sock, client_sock = socket.socketpair()
@@ -253,7 +253,6 @@ class TestAsyncProtocol(unittest.IsolatedAsyncioTestCase):
         _, writer_c = await asyncio.open_connection(sock=client_sock)
 
         try:
-            # Envía solo 2 bytes del prefijo de 4 bytes y cierra
             writer_c.write(b"\x00\x01")
             await writer_c.drain()
             writer_c.close()
@@ -308,7 +307,7 @@ class TestAsyncProtocol(unittest.IsolatedAsyncioTestCase):
 
 
 class TestProtocolEdgeCasesAndStress(unittest.TestCase):
-    """Pruebas adicionales para Issue #17 / GitHub #15: Edge cases, payloads grandes y streams continuos."""
+    """Pruebas de casos límite y transferencias de payload."""
 
     def setUp(self) -> None:
         self.server_sock, self.client_sock = socket.socketpair()
@@ -320,14 +319,12 @@ class TestProtocolEdgeCasesAndStress(unittest.TestCase):
         self.client_sock.close()
 
     def test_completely_empty_message(self) -> None:
-        """Mensaje con header vacío y payload vacío."""
         send_msg(self.client_sock, {})
         header, payload = recv_msg(self.server_sock)
         self.assertEqual(header, {"size": 0})
         self.assertEqual(payload, b"")
 
     def test_large_payload_transfer(self) -> None:
-        """Envío y recepción de payload binario de 2 MiB."""
         large_payload = b"X" * (2 * 1024 * 1024)
         header = {"cmd": "UPLOAD_CHUNK", "seq": 1}
 
@@ -339,7 +336,6 @@ class TestProtocolEdgeCasesAndStress(unittest.TestCase):
         self.assertEqual(received_payload, large_payload)
 
     def test_multiple_consecutive_messages_in_stream(self) -> None:
-        """Varios mensajes enviados en ráfaga sobre el mismo socket."""
         messages = [
             ({"cmd": "MSG_1", "id": 1}, b"payload_one"),
             ({"cmd": "MSG_2", "id": 2}, b""),
@@ -356,7 +352,6 @@ class TestProtocolEdgeCasesAndStress(unittest.TestCase):
             self.assertEqual(p, expected_p)
 
     def test_connection_severed_during_payload(self) -> None:
-        """Corte de socket a mitad de transmisión del payload."""
         header = {"cmd": "UPLOAD_CHUNK"}
         payload = b"1234567890"
 
@@ -369,19 +364,16 @@ class TestProtocolEdgeCasesAndStress(unittest.TestCase):
             recv_msg(self.server_sock)
 
     def test_clean_eof_raises_eof_error(self) -> None:
-        """Cierre limpio del socket antes de enviar una trama lanza EOFError (5.2)."""
         self.client_sock.close()
         with self.assertRaises(EOFError):
             recv_msg(self.server_sock)
 
     def test_send_msg_rejects_oversized_header(self) -> None:
-        """Fail-fast en _encode_frame cuando el header supera MAX_HEADER_SIZE (2.2)."""
         huge_header = {"cmd": "TEST", "junk": "A" * (MAX_HEADER_SIZE + 100)}
         with self.assertRaises(ProtocolError):
             send_msg(self.client_sock, huge_header)
 
     def test_recv_msg_rejects_oversized_payload(self) -> None:
-        """Protección DoS cuando header['size'] supera MAX_PAYLOAD_SIZE (2.1)."""
         raw_header = json.dumps({"cmd": "UPLOAD", "size": MAX_PAYLOAD_SIZE + 1}).encode("utf-8")
         prefix = struct.pack("!I", len(raw_header))
         self.client_sock.sendall(prefix + raw_header)
