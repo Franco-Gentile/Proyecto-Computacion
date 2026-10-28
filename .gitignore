@@ -11,8 +11,12 @@ __pycache__/
 .coverage
 htmlcov/
 
-# Variables de entorno locales
+# Variables de entorno, scripts locales de arranque y notas de sesión
 .env
+boot.sh
+boot.ps1
+RESUMEN_SESION.md
+
 
 # Archivos de video y subidas locales / temporales
 *.mp4
