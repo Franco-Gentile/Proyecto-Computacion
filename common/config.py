@@ -3,13 +3,17 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 import os
+import urllib.parse
 
+from common.domain.entities import ScalingConfig
 from common.domain.enums import DEFAULT_SEGMENT_DURATION_S, Quality
-from common.domain.exceptions import DomainError
+
+ALLOWED_DB_SCHEMES: tuple[str, ...] = ("postgresql://", "postgres://")
+ALLOWED_REDIS_SCHEMES: tuple[str, ...] = ("redis://", "rediss://")
 
 
-class ConfigError(DomainError):
-    """Error de configuración ante variables de entorno con valores inválidos."""
+class ConfigError(Exception):
+    """Error de configuración ante variables de entorno o invariantes con valores inválidos."""
 
 
 def _parse_int(
@@ -22,14 +26,14 @@ def _parse_int(
     """Lee una variable entera del entorno validando su formato y rango."""
     raw = source.get(var_name)
     if raw is None or not raw.strip():
-        value = default
-    else:
-        try:
-            value = int(raw.strip())
-        except ValueError as exc:
-            raise ConfigError(
-                f"Variable '{var_name}' inválida: se esperaba un entero y se recibió '{raw}'."
-            ) from exc
+        return default
+
+    try:
+        value = int(raw.strip())
+    except ValueError as exc:
+        raise ConfigError(
+            f"Variable '{var_name}' inválida: se esperaba un entero y se recibió '{raw}'."
+        ) from exc
 
     if min_value is not None and value < min_value:
         raise ConfigError(
@@ -44,15 +48,13 @@ def _parse_int(
 
 def _parse_qualities(source: Mapping[str, str]) -> tuple[Quality, ...]:
     """Parsea la lista de calidades permitidas desde 'QUALITIES' (ej. '480,720')."""
-    if "QUALITIES" not in source:
+    raw = source.get("QUALITIES")
+    if raw is None or not raw.strip():
         return (Quality.Q480, Quality.Q720)
 
-    raw = source["QUALITIES"]
     parts = [part.strip() for part in raw.split(",") if part.strip()]
     if not parts:
-        raise ConfigError(
-            "Variable 'QUALITIES' inválida: debe especificar al menos una calidad (480, 720)."
-        )
+        return (Quality.Q480, Quality.Q720)
 
     parsed: list[Quality] = []
     for part in parts:
@@ -69,9 +71,27 @@ def _parse_qualities(source: Mapping[str, str]) -> tuple[Quality, ...]:
     return tuple(parsed)
 
 
+def _validate_db_url(url: str, var_name: str = "DB_URL") -> None:
+    """Valida que una URL de base de datos comience con un esquema PostgreSQL permitido."""
+    if not any(url.startswith(scheme) for scheme in ALLOWED_DB_SCHEMES):
+        allowed = " o ".join(f"'{s}'" for s in ALLOWED_DB_SCHEMES)
+        raise ConfigError(
+            f"Variable '{var_name}' inválida: debe comenzar con {allowed} y se recibió '{url}'."
+        )
+
+
+def _validate_redis_url(url: str, var_name: str = "REDIS_URL") -> None:
+    """Valida que una URL de Redis comience con un esquema Redis permitido."""
+    if not any(url.startswith(scheme) for scheme in ALLOWED_REDIS_SCHEMES):
+        allowed = " o ".join(f"'{s}'" for s in ALLOWED_REDIS_SCHEMES)
+        raise ConfigError(
+            f"Variable '{var_name}' inválida: debe comenzar con {allowed} y se recibió '{url}'."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class AppConfig:
-    """Configuración inmutable de la aplicación."""
+    """Configuración inmutable de la aplicación con validación de invariantes."""
 
     db_host: str = "localhost"
     db_port: int = 5434
@@ -98,10 +118,47 @@ class AppConfig:
     max_workers: int = 6
     tasks_per_worker: int = 4
 
+    def __post_init__(self) -> None:
+        """Garantiza las invariantes del objeto independientemente de cómo se instancie."""
+        if not (1 <= self.db_port <= 65535):
+            raise ConfigError(f"db_port fuera de rango (1-65535): {self.db_port}")
+        if not (1 <= self.redis_port <= 65535):
+            raise ConfigError(f"redis_port fuera de rango (1-65535): {self.redis_port}")
+        if not (1 <= self.server_port <= 65535):
+            raise ConfigError(f"server_port fuera de rango (1-65535): {self.server_port}")
+        if self.max_clients < 1:
+            raise ConfigError(f"max_clients debe ser >= 1: {self.max_clients}")
+        if self.max_upload_mb < 1:
+            raise ConfigError(f"max_upload_mb debe ser >= 1: {self.max_upload_mb}")
+        if self.seg_len < 1:
+            raise ConfigError(f"seg_len debe ser >= 1: {self.seg_len}")
+        if self.prefetch < 0:
+            raise ConfigError(f"prefetch debe ser >= 0: {self.prefetch}")
+        if self.min_workers < 1:
+            raise ConfigError(f"min_workers debe ser >= 1: {self.min_workers}")
+        if self.max_workers < self.min_workers:
+            raise ConfigError(
+                f"MAX_WORKERS ({self.max_workers}) no puede ser menor que MIN_WORKERS ({self.min_workers})."
+            )
+        if self.tasks_per_worker < 1:
+            raise ConfigError(f"tasks_per_worker debe ser >= 1: {self.tasks_per_worker}")
+
+        _validate_db_url(self.db_url, "db_url")
+        _validate_redis_url(self.redis_url, "redis_url")
+
     @property
     def max_upload_bytes(self) -> int:
         """Tamaño máximo de subida expresado en bytes."""
         return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def scaling(self) -> ScalingConfig:
+        """Devuelve la configuración de autoescalado para el supervisor."""
+        return ScalingConfig(
+            min_workers=self.min_workers,
+            max_workers=self.max_workers,
+            tasks_per_worker=self.tasks_per_worker,
+        )
 
 
 def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
@@ -113,17 +170,28 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     db_name = source.get("DB_NAME", "videoapp_dev").strip() or "videoapp_dev"
     db_username = source.get("DB_USERNAME", "videoapp").strip() or "videoapp"
     db_password = source.get("DB_PASSWORD", "videoapp_dev_pass")
-    db_url = (
-        source.get("DB_URL", "").strip()
-        or f"postgresql://{db_username}:{db_password}@{db_host}:{db_port}/{db_name}"
-    )
+    if db_password is not None and not db_password.strip():
+        db_password = "videoapp_dev_pass"
+
+    encoded_user = urllib.parse.quote_plus(db_username)
+    encoded_pass = urllib.parse.quote_plus(db_password)
+
+    raw_db_url = source.get("DB_URL", "").strip()
+    if raw_db_url:
+        _validate_db_url(raw_db_url, "DB_URL")
+        db_url = raw_db_url
+    else:
+        db_url = f"postgresql://{encoded_user}:{encoded_pass}@{db_host}:{db_port}/{db_name}"
 
     redis_host = source.get("REDIS_HOST", "localhost").strip() or "localhost"
     redis_port = _parse_int(source, "REDIS_PORT", default=6379, min_value=1, max_value=65535)
-    redis_url = (
-        source.get("REDIS_URL", "").strip()
-        or f"redis://{redis_host}:{redis_port}/0"
-    )
+
+    raw_redis_url = source.get("REDIS_URL", "").strip()
+    if raw_redis_url:
+        _validate_redis_url(raw_redis_url, "REDIS_URL")
+        redis_url = raw_redis_url
+    else:
+        redis_url = f"redis://{redis_host}:{redis_port}/0"
 
     server_host = source.get("SERVER_HOST", "0.0.0.0").strip() or "0.0.0.0"
     server_port = _parse_int(source, "SERVER_PORT", default=9000, min_value=1, max_value=65535)
@@ -170,3 +238,4 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         max_workers=max_workers,
         tasks_per_worker=tasks_per_worker,
     )
+
