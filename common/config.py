@@ -11,9 +11,38 @@ from common.domain.enums import DEFAULT_SEGMENT_DURATION_S, Quality
 ALLOWED_DB_SCHEMES: tuple[str, ...] = ("postgresql://", "postgres://")
 ALLOWED_REDIS_SCHEMES: tuple[str, ...] = ("redis://", "rediss://")
 
+NUMERIC_INVARIANTS: tuple[tuple[str, int, int | None], ...] = (
+    ("db_port", 1, 65535),
+    ("redis_port", 1, 65535),
+    ("server_port", 1, 65535),
+    ("max_clients", 1, None),
+    ("max_upload_mb", 1, None),
+    ("seg_len", 1, None),
+    ("prefetch", 0, None),
+    ("min_workers", 1, None),
+    ("tasks_per_worker", 1, None),
+)
+
 
 class ConfigError(Exception):
     """Error de configuración ante variables de entorno o invariantes con valores inválidos."""
+
+
+def _check_in_range(
+    name: str,
+    value: int,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> None:
+    """Valida que un entero respete los límites inferior y superior definidos."""
+    if min_value is not None and value < min_value:
+        raise ConfigError(
+            f"Variable '{name}' fuera de rango: {value} debe ser >= {min_value}."
+        )
+    if max_value is not None and value > max_value:
+        raise ConfigError(
+            f"Variable '{name}' fuera de rango: {value} debe ser <= {max_value}."
+        )
 
 
 def _parse_int(
@@ -35,14 +64,7 @@ def _parse_int(
             f"Variable '{var_name}' inválida: se esperaba un entero y se recibió '{raw}'."
         ) from exc
 
-    if min_value is not None and value < min_value:
-        raise ConfigError(
-            f"Variable '{var_name}' fuera de rango: {value} debe ser >= {min_value}."
-        )
-    if max_value is not None and value > max_value:
-        raise ConfigError(
-            f"Variable '{var_name}' fuera de rango: {value} debe ser <= {max_value}."
-        )
+    _check_in_range(var_name, value, min_value, max_value)
     return value
 
 
@@ -120,28 +142,13 @@ class AppConfig:
 
     def __post_init__(self) -> None:
         """Garantiza las invariantes del objeto independientemente de cómo se instancie."""
-        if not (1 <= self.db_port <= 65535):
-            raise ConfigError(f"db_port fuera de rango (1-65535): {self.db_port}")
-        if not (1 <= self.redis_port <= 65535):
-            raise ConfigError(f"redis_port fuera de rango (1-65535): {self.redis_port}")
-        if not (1 <= self.server_port <= 65535):
-            raise ConfigError(f"server_port fuera de rango (1-65535): {self.server_port}")
-        if self.max_clients < 1:
-            raise ConfigError(f"max_clients debe ser >= 1: {self.max_clients}")
-        if self.max_upload_mb < 1:
-            raise ConfigError(f"max_upload_mb debe ser >= 1: {self.max_upload_mb}")
-        if self.seg_len < 1:
-            raise ConfigError(f"seg_len debe ser >= 1: {self.seg_len}")
-        if self.prefetch < 0:
-            raise ConfigError(f"prefetch debe ser >= 0: {self.prefetch}")
-        if self.min_workers < 1:
-            raise ConfigError(f"min_workers debe ser >= 1: {self.min_workers}")
+        for field_name, min_val, max_val in NUMERIC_INVARIANTS:
+            _check_in_range(field_name, getattr(self, field_name), min_val, max_val)
+
         if self.max_workers < self.min_workers:
             raise ConfigError(
                 f"MAX_WORKERS ({self.max_workers}) no puede ser menor que MIN_WORKERS ({self.min_workers})."
             )
-        if self.tasks_per_worker < 1:
-            raise ConfigError(f"tasks_per_worker debe ser >= 1: {self.tasks_per_worker}")
 
         _validate_db_url(self.db_url, "db_url")
         _validate_redis_url(self.redis_url, "redis_url")
